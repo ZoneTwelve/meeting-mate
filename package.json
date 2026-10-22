@@ -1,0 +1,38 @@
+{
+  "name": "meeting-mate",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "check": "node scripts/check.mjs",
+    "test": "node --test test/*.test.mjs",
+    "mcp": "node src/mcp.mjs",
+    "test:mcp": "node --test test/mcp.test.mjs",
+    "test:live": "node scripts/test-mcp-live.mjs",
+    "transcript:setup": "node scripts/transcript-setup.mjs",
+    "test:transcript": "python3 -m unittest discover -s test -p 'transcribe_test.py' && node --test test/transcripts.test.mjs",
+    "test:transcript:live": "node scripts/test-transcript-live.mjs",
+    "repo:check": "node scripts/repo-watch.mjs once",
+    "repo:status": "node scripts/repo-watch.mjs status",
+    "repo:watch": "node scripts/repo-watch.mjs install",
+    "repo:watch:stop": "node scripts/repo-watch.mjs stop",
+    "build:recorder": "node scripts/build-recorder.mjs",
+    "camera:prepare": "node scripts/prepare-camera.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "test:av": "node scripts/smoke.mjs",
+    "install:launchd": "node scripts/launchd.mjs install",
+    "stop:launchd": "node scripts/launchd.mjs stop",
+    "upgrade:when-idle": "node scripts/upgrade-when-idle.mjs",
+    "join:now": "node scripts/join-now.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.33.1",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "meetingUrls": [
+    "https://meet.google.com/abc-defg-hij"
+  ],
+  "pollIntervalSeconds": 3600,
+  "profileDir": "./.meeting-mate/chrome-profile",
+  "recordingsDir": "./recordings",
+  "statusFile": "./.meeting-mate/status.json",
+  "healthPort": 8787,
+  "cdpPort": 9222,
+  "chromiumPath": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "cameraIndicator": true,
+  "segmentSeconds": 600,
+  "minimumFreeGB": 2,
+  "joinWaitSeconds": 900,
+  "maxSessionSeconds": 43200,
+  "transcriptEnabled": true,
+  "transcriptLanguage": "auto",
+  "transcriptsDir": "./transcripts"
+}

@@ -1,0 +1,72 @@
+# Local secrets and machine-specific configuration
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+config.json
+
+# Dependencies, Python environments, and caches
+node_modules/
+.pnpm-store/
+.venv/
+.venv-*/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# Native recorder, Chrome profiles, and private runtime state
+.meeting-mate/
+
+# Downloaded speech models and model caches
+models/
+.models/
+model-cache/
+.model-cache/
+.huggingface/
+.hf_cache/
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.gguf
+*.ggml
+
+# Private recordings, transcripts, and generated test artifacts
+recordings/
+transcripts/
+test-results/
+test-artifacts/
+coverage/
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.m4a
+*.wav
+*.mp3
+*.flac
+*.aac
+*.ogg
+*.opus
+*.aif
+*.aiff
+*.caf
+*.m4v
+*.avi
+*.mpeg
+*.mpg
+logs/
+*.log
+*.log.*
+*.out
+*.err
+*.tmp
+
+# macOS metadata
+.DS_Store

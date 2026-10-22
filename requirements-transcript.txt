@@ -1,0 +1,25 @@
+# Python 3.12; CPU-only local inference. No Torch/CUDA or gated models.
+faster-whisper==1.2.1
+sherpa-onnx==1.13.8
+sherpa-onnx-core==1.13.8
+ctranslate2==4.8.3
+numpy==2.5.4
+onnxruntime==1.31.0
+av==19.0.2
+tokenizers==0.23.3
+huggingface-hub==0.36.0
+# Transitive dependencies pinned from the verified macOS arm64 environment.
+certifi==2026.10.19
+charset-normalizer==3.5.2
+filelock==4.2.4
+flatbuffers==25.12.19
+fsspec==2026.9.0
+hf-xet==1.7.0
+idna==3.20
+packaging==26.3
+protobuf==7.36.2
+pyyaml==6.0.3
+requests==2.34.2
+tqdm==4.70.1
+typing-extensions==4.16.0
+urllib3==2.8.0
