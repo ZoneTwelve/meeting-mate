@@ -10,6 +10,7 @@
     "start": "node src/index.mjs",
     "check": "node scripts/check.mjs",
     "test": "node --test test/*.test.mjs",
+    "test:ci": "node --test --test-reporter=spec test/*.test.mjs",
     "cli": "node bin/meeting-mate.mjs",
     "test:cli": "node --test test/cli.test.mjs",
     "release:pack": "node scripts/package-release.mjs --kind cli",

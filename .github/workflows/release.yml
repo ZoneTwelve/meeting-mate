@@ -42,7 +42,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run check
       - run: pnpm exec node --check bin/meeting-mate.mjs
-      - run: pnpm test
+      - name: Node tests with public failure annotations
+        shell: bash
+        run: |
+          if pnpm run test:ci 2>&1 | tee "$RUNNER_TEMP/node-tests.txt"; then exit 0; fi
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const detail = readFileSync(`${process.env.RUNNER_TEMP}/node-tests.txt`, "utf8").slice(-12000);
+            console.log(`::error title=Node test failure::${detail.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A")}`);
+          '
+          exit 1
       - run: python3 -m unittest discover -s test -p 'transcribe_test.py'
 
   cli:
@@ -102,7 +111,16 @@ jobs:
           node-version: '22'
           architecture: ${{ matrix.arch }}
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+      - name: Node tests with public failure annotations
+        shell: bash
+        run: |
+          if pnpm run test:ci 2>&1 | tee "$RUNNER_TEMP/node-tests.txt"; then exit 0; fi
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const detail = readFileSync(`${process.env.RUNNER_TEMP}/node-tests.txt`, "utf8").slice(-12000);
+            console.log(`::error title=Node test failure::${detail.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A")}`);
+          '
+          exit 1
       - name: Compile and ad-hoc sign only in the fresh CI checkout
         run: pnpm run build:recorder
       - name: Verify bundle signature and architecture without recording
