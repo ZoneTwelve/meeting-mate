@@ -1,0 +1,171 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Require a matching version and a private package
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const p = JSON.parse(readFileSync("package.json", "utf8"));
+            if (!/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(p.version) ||
+                process.env.RELEASE_TAG !== `v${p.version}` || p.private !== true ||
+                p.bin?.["meeting-mate"] !== "bin/meeting-mate.mjs") {
+              throw new Error("Tag must match package version, private must remain true, and CLI bin must be configured");
+            }
+          '
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
+      - run: pnpm exec node --check bin/meeting-mate.mjs
+      - run: pnpm test
+      - run: python3 -m unittest discover -s test -p 'transcribe_test.py'
+
+  cli:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - run: pnpm install --frozen-lockfile
+      - name: Package only approved runtime files
+        env:
+          RELEASE_OUTPUT: ${{ runner.temp }}/meeting-mate-release
+        run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            pnpm exec node scripts/package-release.mjs --kind cli --out "$RELEASE_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-cli
+          path: ${{ runner.temp }}/meeting-mate-release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  native:
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            macho: arm64
+          - runner: macos-15-intel
+            arch: x64
+            macho: x86_64
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+      MEETING_MATE_CODESIGN_IDENTITY: '-'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          architecture: ${{ matrix.arch }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - name: Compile and ad-hoc sign only in the fresh CI checkout
+        run: pnpm run build:recorder
+      - name: Verify bundle signature and architecture without recording
+        env:
+          EXPECTED_ARCH: ${{ matrix.macho }}
+        run: |
+          codesign --verify --deep --strict '.meeting-mate/Meeting Mate Recorder.app'
+          plutil -lint '.meeting-mate/Meeting Mate Recorder.app/Contents/Info.plist'
+          test "$(lipo -archs '.meeting-mate/Meeting Mate Recorder.app/Contents/MacOS/meeting-mate-recorder')" = "$EXPECTED_ARCH"
+      - name: Package the signed app without changing its bytes
+        env:
+          RELEASE_ARCH: ${{ matrix.arch }}
+          RELEASE_OUTPUT: ${{ runner.temp }}/meeting-mate-release
+        run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            pnpm exec node scripts/package-release.mjs --kind native --arch "$RELEASE_ARCH" --out "$RELEASE_OUTPUT"
+      - name: Verify the extracted ZIP signature and executable permissions
+        env:
+          RELEASE_OUTPUT: ${{ runner.temp }}/meeting-mate-release
+          UNPACK_OUTPUT: ${{ runner.temp }}/meeting-mate-unpacked
+        run: |
+          mkdir "$UNPACK_OUTPUT"
+          unzip -q "$RELEASE_OUTPUT/"*.zip -d "$UNPACK_OUTPUT"
+          codesign --verify --deep --strict "$UNPACK_OUTPUT/Meeting Mate Recorder.app"
+          test -x "$UNPACK_OUTPUT/Meeting Mate Recorder.app/Contents/MacOS/meeting-mate-recorder"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-native-${{ matrix.arch }}
+          path: ${{ runner.temp }}/meeting-mate-release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    # No untrusted pull_request code or external repository can publish here.
+    if: github.repository == 'ZoneTwelve/meeting-mate'
+    needs: [verify, cli, native]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: artifacts
+      - name: Verify checksums and publish GitHub assets only
+        working-directory: artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=("meeting-mate-cli-${RELEASE_TAG}.tgz"
+                  "MeetingMateRecorder-${RELEASE_TAG}-macos-arm64.zip"
+                  "MeetingMateRecorder-${RELEASE_TAG}-macos-x64.zip")
+          for asset in "${assets[@]}"; do
+            sha256sum --check "${asset}.sha256"
+          done
+          cat "${assets[0]}.sha256" "${assets[1]}.sha256" "${assets[2]}.sha256" > SHA256SUMS
+          flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" "${assets[@]}" SHA256SUMS \
+            --repo "$GH_REPO" --verify-tag --title "$RELEASE_TAG" --generate-notes "${flags[@]}"

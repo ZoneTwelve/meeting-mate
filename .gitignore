@@ -70,3 +70,7 @@ logs/
 
 # macOS metadata
 .DS_Store
+
+# Local editor recovery files (never publish or delete active buffers)
+*.swp
+*.swo

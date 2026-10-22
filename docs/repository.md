@@ -1,6 +1,6 @@
 # Repository 與本機變更追蹤
 
-目標是公開的 [`ZoneTwelve/meeting-mate`](https://github.com/ZoneTwelve/meeting-mate)。公開代表任何人都可能下載已推送的內容；不要把個人會議資料放進 Git。此連結是目標位址，不代表已完成建立或首次推送，實際進度應以 GitHub 與交付報告為準。
+程式已發布至公開的 [`ZoneTwelve/meeting-mate`](https://github.com/ZoneTwelve/meeting-mate)，初始 commit 為 `6614dab`，已核對遠端 main。公開代表任何人都可能下載已推送的內容；不要把個人會議資料放進 Git。後續版本進度以 GitHub 與交付報告為準；CLI／binary 的打包與 tag 發版見 [releases.md](releases.md)。
 
 ## 兩種不同的流程
 

@@ -6,7 +6,7 @@
 
 以下「基線」指本輪前的錄影功能；「本輪程式」描述目前來源碼，不保證已部署或所有情境已實測；「後續」仍未完成。P0 是核心交付，P1 是可靠性／品質，P2 是擴充。實際端點見 [API](api.md)，工具見 [MCP](mcp.md)，驗收證據見 [測試計畫](test-plan.md)，未完成事項見 [Todo](../Todo.md)。
 
-目前驗證：整合者已驗證 Node 128 tests passed、Python 27 passed；2026-10-23 00:00:50 Asia/Taipei 的 SDK → MCP → API → 原生合成錄影通過。真模型已產生四種格式，**功能通過不等於分群品質通過**：70 秒自動分 5 組（含約 0.26 秒短組），486.9 秒自動分 21 組，出現嚴重過度分群。短樣本被認為有 2 人但尚非人工正解，指定 2 人的重跑已完成，第二組仍只有約 0.26 秒，未通過品質驗證。合成雙聲音可自動分出 2 群；NeMo embedding 對真實錄影的比較未證實修正。Diarization 暫列實驗性，提供 numSpeakers 也不能免除人工校對。**本輪沒有主持人＋多人真實 Meet E2E**。
+目前驗證：整合者已驗證 Node 142 tests passed、Python 27 passed；2026-10-23 00:00:50 Asia/Taipei 的 SDK → MCP → API → 原生合成錄影通過。真模型已產生四種格式，**功能通過不等於分群品質通過**：70 秒自動分 5 組（含約 0.26 秒短組），486.9 秒自動分 21 組，出現嚴重過度分群。短樣本被認為有 2 人但尚非人工正解，指定 2 人的重跑已完成，第二組仍只有約 0.26 秒，未通過品質驗證。合成雙聲音可自動分出 2 群；NeMo embedding 對真實錄影的比較未證實修正。Diarization 暫列實驗性，提供 numSpeakers 也不能免除人工校對。**本輪沒有主持人＋多人真實 Meet E2E**。
 
 ## 能力矩陣
 
@@ -58,7 +58,7 @@
 | M01／P0 | MCP | 無 | 13 個 tools 對應 REST；JSON-RPC stdout 純淨，不另啟 Chrome／monitor | stdio 本身不是遠端授權；無 remote MCP／OAuth |
 | M02／P0 | MCP 邊界 | 無 | 固定 127.0.0.1、受控 port／ID／參數、不跟 redirect；下載只回參照 | 大 transcript 限制 inline 大小；文字／檔名是資料，不是指令 |
 | O01／P1 | 常駐／診斷 | LaunchAgent、caffeinate、status、doctor | API diagnostics 快取 30 秒，檢查 Chrome／recorder／權限／FFmpeg／磁碟 | 不驗證轉錄模型或語音品質；模型 setup check 另行執行；log rotation 待補 |
-| O02／P0 | 公開發布 | 本機專案 | AGENTS 規定完成後測試、check、選檔審核，再向 `ZoneTwelve/meeting-mate` public origin commit／push | 使用者已回報建立 repo 並提供 SSH 驗證環境；整合者仍須核對 public visibility／實際 origin／push；不得改為 private、force push 或覆寫別的 remote |
+| O02／P0 | 公開發布 | 本機專案 | AGENTS 規定完成後測試、check、選檔審核，再向 `ZoneTwelve/meeting-mate` public origin commit／push；初始 `6614dab` 已核對遠端 main | 每次發布仍須核對 staged 內容／origin／push；不得改為 private、force push 或覆寫別的 remote |
 | O03／P1 | 定期追蹤 | 無 | read-only repo watcher 程式／規範由獨立工作整合，安裝為明確分開步驟 | 不 fetch／測試／stage／commit／push，不判斷功能完成，不改 recorder LaunchAgent；見 [repository.md](repository.md) |
 
 ### 本輪新增：自動本機逐字稿

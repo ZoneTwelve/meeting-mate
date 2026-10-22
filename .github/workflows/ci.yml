@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: '22'
+          - os: ubuntu-latest
+            node: '24'
+          - os: macos-15
+            node: '22'
+            arch: arm64
+            macho: arm64
+          - os: macos-15-intel
+            node: '22'
+            arch: x64
+            macho: x86_64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
+      - run: pnpm exec node --check bin/meeting-mate.mjs
+      - run: pnpm test
+      - name: Python transcription logic (no models or media)
+        run: python3 -m unittest discover -s test -p 'transcribe_test.py'
+      - name: Config-free CLI help
+        run: pnpm exec node bin/meeting-mate.mjs --help
+      - name: Check the allowlisted CLI archive
+        env:
+          RELEASE_OUTPUT: ${{ runner.temp }}/meeting-mate-release
+        run: pnpm exec node scripts/package-release.mjs --kind cli --out "$RELEASE_OUTPUT"
+      - name: Compile and ad-hoc sign native recorder (fresh macOS CI checkout only)
+        if: runner.os == 'macOS'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '15.0'
+          MEETING_MATE_CODESIGN_IDENTITY: '-'
+        run: pnpm run build:recorder
+      - name: Verify native signature, plist and architecture without recording
+        if: runner.os == 'macOS'
+        env:
+          EXPECTED_ARCH: ${{ matrix.macho }}
+        run: |
+          codesign --verify --deep --strict '.meeting-mate/Meeting Mate Recorder.app'
+          plutil -lint '.meeting-mate/Meeting Mate Recorder.app/Contents/Info.plist'
+          test "$(lipo -archs '.meeting-mate/Meeting Mate Recorder.app/Contents/MacOS/meeting-mate-recorder')" = "$EXPECTED_ARCH"
+      - name: Package native ZIP and verify the extracted signature
+        if: runner.os == 'macOS'
+        env:
+          RELEASE_ARCH: ${{ matrix.arch }}
+          RELEASE_OUTPUT: ${{ runner.temp }}/meeting-mate-release
+          UNPACK_OUTPUT: ${{ runner.temp }}/meeting-mate-unpacked
+        run: |
+          pnpm exec node scripts/package-release.mjs --kind native --arch "$RELEASE_ARCH" --out "$RELEASE_OUTPUT"
+          mkdir "$UNPACK_OUTPUT"
+          unzip -q "$RELEASE_OUTPUT/"*.zip -d "$UNPACK_OUTPUT"
+          codesign --verify --deep --strict "$UNPACK_OUTPUT/Meeting Mate Recorder.app"
+          test -x "$UNPACK_OUTPUT/Meeting Mate Recorder.app/Contents/MacOS/meeting-mate-recorder"

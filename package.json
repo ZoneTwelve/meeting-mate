@@ -3,10 +3,16 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "meeting-mate": "bin/meeting-mate.mjs"
+  },
   "scripts": {
     "start": "node src/index.mjs",
     "check": "node scripts/check.mjs",
     "test": "node --test test/*.test.mjs",
+    "cli": "node bin/meeting-mate.mjs",
+    "test:cli": "node --test test/cli.test.mjs",
+    "release:pack": "node scripts/package-release.mjs --kind cli",
     "mcp": "node src/mcp.mjs",
     "test:mcp": "node --test test/mcp.test.mjs",
     "test:live": "node scripts/test-mcp-live.mjs",

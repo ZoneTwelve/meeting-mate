@@ -10,13 +10,14 @@
 
 | 層級／時間 | 命令或方式 | 結果與範圍 |
 | --- | --- | --- |
-| L1，最新整合回報（2026-10-23） | `pnpm test` | 128 passed；Node 單元／mock 整合，不能代替真模型／Meet 品質測試。 |
+| L1，最新整合回報（2026-10-23） | `pnpm test` | 142 passed（含 14 項 CLI／封裝測試）；Node 單元／mock 整合，不能代替真模型／Meet 品質測試。 |
 | T1，最新整合回報 | Python 轉錄邏輯測試 | 27 passed，獨立於上述 Node 數量。 |
-| 語法，最新整合回報 | `pnpm run check` | 通過；不代表 native 或模型品質成功。 |
+| 語法，最新整合回報 | `pnpm run check` | 46 個 JavaScript 檔案及 shell wrapper 通過；不代表 native 或模型品質成功。 |
+| CLI archive | 白名單封裝 → 解壓 → `pnpm install --prod --frozen-lockfile` → CLI | help 與讀取既有本機 API 通過；51 個明確檔案，不含私人產物。遠端雙架構編譯由 [CI](../.github/workflows/ci.yml) 驗證；尚未建立正式 release tag。 |
 | L2，2026-10-23 00:00:50 Asia/Taipei（2026-10-22T16:00:50Z） | `pnpm run test:live`，官方 SDK → MCP → API → 原生 recorder | 通過；列出 13 tools；測試 job `debca928-5f1e-4a67-9f70-7ed91e72a4f9` 為 passed。該次服務回報 apiVersion 1，完成後閒置。 |
 | T2，真模型逐字稿 | 本機 ASR／diarization 與四格式匯出 | JSON／TXT／SRT／VTT 功能已驗證；自動分群有嚴重過度分群，品質未通過，詳見下方紀錄。 |
 | L3，真實多人 Meet | 主持人核准＋遠端發言＋全員離場 | **本輪未執行**；舊輪次的 Meet 成品不能代替這輪 E2E。 |
-| 公開 repo | `ZoneTwelve/meeting-mate` public origin 與 push | 使用者回報 repo 已建立並提供 SSH 驗證環境；整合者仍須驗證可見性、origin 及 push，尚無本文件可記錄的推送結果。 |
+| 公開 repo | `ZoneTwelve/meeting-mate` public origin 與 push | 已確認 public visibility、SSH origin，初始 commit `6614dab` 已 push，遠端 main SHA 與本機相符；未包含私人產物。 |
 
 L2 實測指標：10.061667 秒、422655 bytes、H.264／AAC、150 個 video frames、469 個 audio frames、maxVolumeDB −31.7、distinctFrames 20。私人證據位於 `.meeting-mate/mcp-live-report.json` 與 `.meeting-mate/smoke/report.json`；它們可能含本機路徑／私人 metadata，**不加入公開 repo**。公開文件只保留上述去識別指標。
 

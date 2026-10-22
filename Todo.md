@@ -23,15 +23,16 @@
 ## P0：整合驗收與發布
 
 - [x] L2：2026-10-23 00:00:50 Asia/Taipei，`pnpm run test:live` 經官方 SDK → MCP → API → 既有授權原生 App 通過；13 tools、10.061667 秒 H.264／AAC、有聲且有變動影格。指標與私人報告位置見測試計畫。
-- [x] 整合者最新回報：Node 128 passed、Python 27 passed、`pnpm run check` 通過；後續程式變更仍須重跑相關測試。
+- [x] 整合者最新回報：Node 142 passed（含 14 項 CLI／封裝測試）、Python 27 passed、`pnpm run check` 46 個 JavaScript 檔案通過；後續程式變更仍須重跑相關測試。
 - [x] T2 功能：真模型已產生逐字稿，JSON／TXT／SRT／VTT 四格式可用；這不等於文字或 Speaker 準確率通過。
 - [ ] T2 品質：70 秒樣本自動分出 5 組（含約 0.26 秒短組），486.9 秒樣本分出 21 組，出現嚴重過度分群。使用者推估短樣本有 2 人，但尚無人工正解；指定 2 人重跑後，第二組仍只有 0.26 秒，並未通過聲音歸屬驗證。Diarization 目前為實驗性，提供 numSpeakers 也不保證正確，仍需改善模型與校對。
 - [ ] 來源音訊完整性：現有錄影器只擷取系統音訊，不擷取本機麥克風；需核對樣本是否實際包含所有人的聲音。未錄到的聲音不能靠分群補回，不能直接將此當作分群錯誤的確定原因。
 - [ ] 整合確認結束 session → 自動排工作 → 完成／失敗可查；服務升級只在閒置時進行，不中斷正式會議。
 - [ ] L3：主持人放行、遠端發言、其他人全離場、自動收尾及逐字稿抽查。本輪尚未執行，不能以合成測試代替。
-- [ ] 公開發布至使用者授權的 **`ZoneTwelve/meeting-mate` public repo**。使用者已回報建立 repo 並提供 SSH 驗證環境；由整合者核對實際 public visibility／origin 與推送結果，不能把 repo 建立當成 push 成功。
-- [ ] 每個完成的功能經測試、`check` 及逐檔機密／私人資料審核後，由整合者選檔 commit／push；先驗證 origin，禁止 force push 或夾帶未完成工作。見 [repository.md](docs/repository.md)。
+- [x] 公開發布至使用者授權的 **`ZoneTwelve/meeting-mate` public repo**。已確認 public visibility、SSH origin 與第一筆 commit `6614dab` 的遠端 main SHA 相符；僅公開經審查的程式、文件與測試。
+- [x] 完成的功能經測試、`check` 及逐檔機密／私人資料審核後，由整合者選檔 commit／push；先驗證 origin，禁止 force push 或夾帶未完成工作。此規則持續適用，見 [repository.md](docs/repository.md)。
 - [x] 已安裝每 30 分鐘執行的 read-only repo watcher，驗證狀態 ready；它只觀察本機 Git 並寫受限 metadata，不會 fetch、測試、stage、commit、push 或認定功能完成，也不修改錄影 LaunchAgent。
+- [x] CI／Release 與 CLI：一般 push／PR 跑 Linux／macOS 測試及 macOS 雙架構編譯驗證；版本 tag 才建立 GitHub Release，提供原生 App ZIP、Node CLI TGZ 與 SHA256SUMS。CLI 白名單封裝、解壓安裝與讀取本機 API 已實測；尚未建立 tag／正式 Release，遠端驗證以 Actions 結果為準。見 [發版與 CLI 文件](docs/releases.md)。
 
 ## P1：錄影可靠性與營運
 
