@@ -13,10 +13,13 @@ export const RELEASE_FILES = Object.freeze([
   'src/mcp.mjs', 'src/meet-page.mjs', 'src/monitor.mjs', 'src/openapi.mjs',
   'src/recorder.mjs', 'src/recording-tests.mjs', 'src/recordings.mjs', 'src/schedule.mjs',
   'src/transcript-format.mjs', 'src/transcripts.mjs',
+  'src/bind-linear.mjs', 'src/slack-client.mjs', 'src/slack-command-server.mjs',
+  'src/slack-bind.mjs', 'src/slack-bind-config.mjs', 'src/slack-bind-commands.mjs', 'src/slack-bind-store.mjs',
   'scripts/build-recorder.mjs', 'scripts/check.mjs', 'scripts/doctor.mjs',
   'scripts/install-launchd.sh', 'scripts/join-now.mjs', 'scripts/launchd.mjs',
   'scripts/package-release.mjs', 'scripts/prepare-camera.mjs', 'scripts/repo-watch.mjs',
   'scripts/smoke.mjs', 'scripts/test-mcp-live.mjs', 'scripts/test-transcript-live.mjs',
+  'scripts/slack-bind.mjs', 'docs/slack-binding.md',
   'scripts/transcribe.py', 'scripts/transcript-setup.mjs', 'scripts/upgrade-when-idle.mjs',
   'docs/api.md', 'docs/mcp.md', 'docs/releases.md', 'docs/repository.md', 'docs/requirements.md', 'docs/test-plan.md', 'docs/transcript.md',
 ]);

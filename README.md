@@ -18,7 +18,8 @@
 | 暫停、恢復、結束 | 暫停仍留在會議；停止會完成檔案並離開 |
 | 錄完得到文字與發言人 | 本機背景佇列產生 `Speaker 1／2`、時間戳及 TXT／JSON／SRT／VTT；品質驗證進行中 |
 | 知道每個 Speaker 的真人姓名 | 尚未支援；聲音分群不等於姓名辨識 |
-| 摘要、待辦、日曆、Zoom／Teams | 後續規劃，見 [Todo.md](Todo.md) |
+| Slack 指令、會後紀要與 Linear 跟進 | `pnpm dev:bind` 接收 `/meeting` 與訊息，交給既有 Yumi 整理；人工確認後建單，見 [Slack binding](docs/slack-binding.md) |
+| 日曆、Zoom／Teams | 後續規劃，見 [Todo.md](Todo.md) |
 
 ```mermaid
 flowchart TD
@@ -34,6 +35,12 @@ flowchart TD
 ```
 
 等待有期限，拒絕入場、被移除或出錯也可能提前結束。錄影驗證失敗時不會冒充可用逐字稿；上述是成功流程。
+
+## 用 Slack 叫 Yumi 加入會議
+
+既有本機服務啟動後，在私有 `.env.yumi` 設定 Slack 憑證，執行 `pnpm dev:bind`。將自己的 HTTPS tunnel 轉到本機 `18007`，Slack `/meeting` 的 Request URL 設為 tunnel 網址加上 `/meeting`，即可使用 `/meeting <Google Meet 連結>`。
+
+後續在 Slack thread 查看錄影、逐字稿與 Yumi 紀要；確認 `approve` 才建立 Linear 任務。完整設定、文字交接方式與使用界線見 [Yumi Meeting Mate：Slack binding](docs/slack-binding.md)。
 
 ## 快速開始
 
