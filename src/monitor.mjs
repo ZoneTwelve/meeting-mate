@@ -57,10 +57,10 @@ export class Monitor {
     if (busyUrl) return { accepted: false, status: 'busy', url, activeUrl: busyUrl };
     const job = this.jobs.find((item) => item.url === url);
     if (job?.stopRequested) return { accepted: false, status: 'busy', url, activeUrl: url };
-    if (job?.state === 'needs_login') return { accepted: false, status: 'needs_login', url };
     if (job && (job.joinRequestedAt || job.joinedAt || job.joinInFlight)) {
       return { accepted: true, status: 'already_active', url, state: job.state };
     }
+    if (job) job.refreshRequested = true;
     this.pendingJoin = url;
     return { accepted: true, status: 'queued', url };
   }
@@ -144,6 +144,19 @@ export class Monitor {
   async step(job) {
     const now = this.now();
     if (job.stopRequested) { await this.finish(job, 'stopped', 'Stopped by local control'); return; }
+    if (job.refreshRequested) {
+      job.refreshRequested = false;
+      // Re-open stale pages on an explicit join, while preserving a call that
+      // became active between receiving the command and this monitor tick.
+      if (!job.joinedAt && !job.joinRequestedAt && !job.joinInFlight && !job.recorder) {
+        const current = job.page ? await job.page.snapshot() : null;
+        if (!['in_call', 'waiting_approval'].includes(current?.phase)) {
+          if (job.page) await this.browser.release(job.url);
+          job.page = null;
+        }
+        job.attemptAt = now; job.paused = false;
+      }
+    }
     if (!job.page) {
       if (job.oneShot && !job.pendingAttempt) return;
       if (now < (job.pageRetryAt ?? 0)) return;
@@ -155,6 +168,7 @@ export class Monitor {
     }
     const snapshot = await job.page.snapshot();
     if (job.stopRequested) { await this.finish(job, 'stopped', 'Stopped by local control'); return; }
+    if (snapshot.phase === 'redirected') { await this.finish(job, 'redirected', 'The Meet page navigated away from the meeting'); return; }
     if (snapshot.phase === 'ended') { await this.finish(job, 'ended', 'Meeting ended, access denied, or removed'); return; }
     if (snapshot.phase === 'needs_login') {
       await this.stopRecording(job);

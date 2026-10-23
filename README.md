@@ -98,13 +98,15 @@ pnpm start
 pnpm run install:launchd
 ```
 
-服務啟動後，在另一個終端機觸發會議並查看狀態：
+服務啟動後，在另一個終端機的本專案根目錄觸發會議並查看狀態：
 
 ```sh
 # 把示意連結換成自己的會議
 pnpm run join:now https://meet.google.com/abc-defg-hij
 curl http://127.0.0.1:8787/healthz
 ```
+
+若出現 `ERR_PNPM_NO_SCRIPT`，先確認所在目錄，或使用 `pnpm -C /absolute/path/to/meeting-mate run join:now <Meet連結>` 指定這份 checkout。
 
 `queued` 只是受理，`waiting_approval` 表示等主持人放行，`recording` 才是錄影中。另一場會議正在加入或錄影時會拒絕新請求，不會把原會議踢掉。臨時輸入且不在設定檔中的連結只執行一次，不會加入固定排程。
 

@@ -17,6 +17,8 @@ export async function bindConfig(directory = root, inherited = process.env) {
   const signingSecret = env.SIGNING_SECRET ?? env.SLACK_SIGNING_SECRET;
   const appId = env.APP_ID ?? env.SLACK_APP_ID;
   if (port && (!signingSecret || !/^A[A-Z0-9]+$/.test(appId ?? ''))) throw new Error('Set SIGNING_SECRET and APP_ID for /meeting, or SLACK_BIND_PORT=0 for polling only.');
+  const meetingAccess = env.SLACK_BIND_MEETING_ACCESS ?? 'workspace';
+  if (!['workspace', 'owner'].includes(meetingAccess)) throw new Error('SLACK_BIND_MEETING_ACCESS must be workspace or owner.');
   const seconds = (key, fallback, min) => {
     const value = Number(env[key] ?? fallback);
     if (!Number.isInteger(value) || value < min || value > 86400) throw new Error(`${key} is outside the supported seconds range.`);
@@ -33,7 +35,7 @@ export async function bindConfig(directory = root, inherited = process.env) {
     catch { throw new Error('Cannot read SLACK_BIND_LINEAR_ENV.'); }
   }
   return {
-    directory, userToken, botToken, port, signingSecret, appId,
+    directory, userToken, botToken, port, signingSecret, appId, meetingAccess,
     pollMs: seconds('SLACK_BIND_POLL_SECONDS', 30, 15),
     searchMs: seconds('SLACK_BIND_SEARCH_SECONDS', 300, 60),
     remindMs: seconds('SLACK_BIND_REMIND_SECONDS', 86400, 300),

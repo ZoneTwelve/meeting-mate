@@ -10,7 +10,7 @@ const digest = value => createHash('sha256').update(value).digest('hex');
 const oldest = (value, baseline) => String(Math.max(baseline, Number(value ?? baseline) - 60));
 export const safeFailure = error => `${/^[a-z_0-9]+$/i.test(error.code ?? '') ? error.code : /^linear_[a-z_0-9]+$/.test(error.message ?? '') ? error.message : 'operation_failed'}${Number.isInteger(error.httpStatus) ? ` (HTTP ${error.httpStatus})` : ''}`;
 const active = job => !!(job.joinedAt || job.joinRequestedAt || job.joinInFlight || job.pendingAttempt || job.recordingFile);
-const terminal = new Set(['stopped', 'ended', 'empty', 'error', 'admission_timeout', 'disconnected', 'capacity_wait', 'session_limit', 'page_timeout']);
+const terminal = new Set(['stopped', 'ended', 'empty', 'error', 'redirected', 'admission_timeout', 'disconnected', 'capacity_wait', 'session_limit', 'page_timeout']);
 const escape = text => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 export class SlackBinding {
@@ -21,24 +21,31 @@ export class SlackBinding {
     this.botId = identity.bot.user_id; this.ownerId = identity.user.user_id;
   }
   async save() { await this.store.save(); }
-  permitted(user) { return (this.config.allowedUsers.length ? this.config.allowedUsers : [this.ownerId]).includes(user); }
-  async acceptSlash({ channel, user, text, trigger }) {
-    if (!this.permitted(user)) return '這台 Mac 尚未授權你的 Slack 帳號執行 Meeting Mate 指令。';
+  permitted(user, action) {
+    if (this.config.meetingAccess === 'workspace' && ['join', 'stop', 'emergency_stop'].includes(action)) return /^[UW][A-Z0-9]+$/.test(user);
+    return (this.config.allowedUsers.length ? this.config.allowedUsers : [this.ownerId]).includes(user);
+  }
+  async acceptSlash({ channel, user, text, trigger, slash = '/meeting' }) {
     if (this.config.channelIds.length && !this.config.channelIds.includes(channel)) return '這個頻道未啟用 Meeting Mate。';
-    const cmd = slashCommand(text);
+    const cmd = slash === '/meeting-stop' ? { action: 'emergency_stop' } : slashCommand(text);
+    if (cmd.action === 'stop' && !cmd.thread) cmd.action = 'emergency_stop';
     if (!cmd.action || cmd.action === 'invalid') return cmd.reason ?? HELP;
     if (cmd.action === 'help') return HELP;
+    if (!this.permitted(user, cmd.action)) return this.config.meetingAccess === 'workspace'
+      ? '這個操作尚未開放你的 Slack 帳號；workspace 成員可使用 /meeting <連結> 與 /meeting-stop。'
+      : '這台 Mac 尚未授權你的 Slack 帳號執行 Meeting Mate 指令。';
     if (cmd.action === 'minutes') return '請在會議 thread 回覆 meeting-mate minutes，讓紀要有明確的會議來源。';
     const id = stableId(`slash:${this.state.teamId}:${trigger}`);
     if (this.state.inbox[id]) { await this.receipts.get(id); return '這個請求已受理；請查看 Meeting Mate 的回報 thread。'; }
-    if (Object.values(this.state.inbox).filter(i => !['done', 'failed'].includes(i.state)).length >= 100) return '本機指令佇列已滿，請稍後再試。';
+    if (cmd.action !== 'emergency_stop' && Object.values(this.state.inbox).filter(i => !['done', 'failed'].includes(i.state)).length >= 100) return '本機指令佇列已滿，請稍後再試。';
     let target;
     const candidates = Object.values(this.state.threads).filter(b => b.channel === channel &&
-      [b.requester, this.ownerId].includes(user) && b.stage !== 'closed' && (b.url || b.issues?.length));
+      ([b.requester, this.ownerId].includes(user) || (cmd.action === 'stop' && this.config.meetingAccess === 'workspace')) &&
+      b.stage !== 'closed' && (b.url || b.issues?.length));
     if (cmd.thread) {
       target = candidates.find(b => b.ts === cmd.thread);
       if (!target) return '找不到可操作的會議 thread；請回原本的 thread 下指令。';
-    } else if (!['join', 'follow'].includes(cmd.action)) {
+    } else if (!['join', 'follow', 'emergency_stop'].includes(cmd.action)) {
       if (candidates.length > 1) return '這個頻道有多個會議 thread，請回要操作的 thread 輸入 meeting-mate 指令，或使用 --thread <訊息時間戳>。';
       target = candidates[0];
       if (!target && cmd.action !== 'status') return '目前沒有可操作的會議。先用 /meeting <Google Meet 連結>，或到已綁定的 thread 下指令。';
@@ -48,14 +55,29 @@ export class SlackBinding {
     try { await receipt; }
     catch (error) { delete this.state.inbox[id]; throw error; }
     finally { this.receipts.delete(id); }
-    return 'Meeting Mate 已受理，會在這個頻道的 thread 回報進度。錄影會等到實際入會後開始；請先確認 Yumi 已加入此頻道。';
+    if (cmd.action === 'emergency_stop') return '已受理緊急停止：會停止本機目前的會議／待加入請求，並在頻道回報。';
+    return cmd.action === 'join' ? 'Meeting Mate 已受理，會自動開啟指定 Meet 並嘗試入會，在這個頻道的 thread 回報進度。請先確認 Yumi 已加入此頻道。'
+      : 'Meeting Mate 已受理，會在會議 thread 回報這次操作的結果。';
   }
   async drainSlash() {
-    for (const item of Object.values(this.state.inbox)) {
+    const queue = Object.values(this.state.inbox).sort((a, b) => Number(b.cmd?.action === 'emergency_stop') - Number(a.cmd?.action === 'emergency_stop'));
+    for (const item of queue) {
       if (['done', 'failed'].includes(item.state) || this.receipts.has(item.id)) continue;
+      // Emergency stop must work even if posting a Slack progress thread is
+      // rate-limited. Reserve its idempotency key before the local mutation.
+      if (item.cmd?.action === 'emergency_stop' && !item.stopReceipt) {
+        try {
+          for (const pending of Object.values(this.state.inbox)) {
+            if (pending.id !== item.id && pending.cmd?.action === 'join' && pending.state === 'queued') { pending.state = 'failed'; pending.canceledByStop = true; }
+          }
+          await this.save();
+          item.stopReceipt = await this.api.stop(undefined, { idempotencyKey: stableId(`slash-stop:${item.id}`) });
+          await this.save();
+        } catch (error) { this.log(`Emergency stop pending: ${safeFailure(error)}`); continue; }
+      }
       let b = this.state.threads[item.target];
       if (!b) {
-        const rootId = await this.emit(`slash-root:${item.id}`, { channel: item.channel }, `[Meeting Mate] <@${item.user}> 的 /meeting ${item.cmd.action} 進度。後續指令請回覆此 thread。`);
+        const rootId = await this.emit(`slash-root:${item.id}`, { channel: item.channel }, `[Meeting Mate] <@${item.user}> 的 ${item.cmd.action === 'emergency_stop' ? '/meeting-stop' : '/meeting'} 進度。此 thread 用來回報；slash 指令請在頻道主畫面使用。`);
         const receipt = this.state.outbox[rootId];
         if (receipt.state !== 'sent') continue;
         const key = `${item.channel}:${receipt.ts}`;
@@ -68,7 +90,13 @@ export class SlackBinding {
         await this.save(); continue;
       }
       item.state = 'executing'; await this.save();
-      try { await this.execute(b, item.cmd, `slash:${item.id}`); item.state = 'done'; }
+      try {
+        if (item.cmd.action === 'emergency_stop') {
+          b.stage = 'closed';
+          await this.emit(`reply:slash:${item.id}`, b, `[Meeting Mate] 已送出本機停止請求（${escape(item.stopReceipt.status ?? 'accepted')}）。錄影檔會完成收尾；不再等候加入。`);
+        } else await this.execute(b, item.cmd, `slash:${item.id}`);
+        item.state = 'done';
+      }
       catch (error) {
         item.state = 'failed'; this.log(`Slash command pending: ${safeFailure(error)}`);
         if (error.details?.status === 'needs_login') b.stage = 'needs_login';
@@ -120,8 +148,8 @@ export class SlackBinding {
     const parsed = command(message.text, { botId: this.botId, direct: channel.is_im, bound: !!binding });
     if (!parsed) return;
     const isYumi = message.user === this.botId;
-    if (isYumi ? parsed.action !== 'minutes' || !/^meeting-mate\s+minutes\s/i.test(message.text) : message.bot_id || !this.permitted(message.user)) return;
-    if (binding && !isYumi && ![binding.requester, this.ownerId].includes(message.user)) return;
+    if (isYumi ? parsed.action !== 'minutes' || !/^meeting-mate\s+minutes\s/i.test(message.text) : message.bot_id || !this.permitted(message.user, parsed.action)) return;
+    if (binding && !isYumi && ![binding.requester, this.ownerId].includes(message.user) && !(parsed.action === 'stop' && this.config.meetingAccess === 'workspace')) return;
     if (!binding) {
       if (isYumi) return;
       binding = { key, channel: channel.id, ts, requester: message.user, stage: 'idle', createdAt: this.now() };
@@ -145,7 +173,7 @@ export class SlackBinding {
   failureMessage(error, action) {
     if (error.message === 'linear_not_configured' || error.message === 'linear_team_not_configured') return '尚未設定本機 Linear 寫入憑證／team，草稿保留。設定後可再次 approve；也可請 Yumi 建單後用 follow 綁定。';
     if (error.message?.startsWith('紀要依據')) return error.message;
-    if (error.details?.status === 'needs_login') return '這場 Meet 需要 Google 登入，目前尚未開始錄影。請在 Meeting Mate 專用 Chrome 完成登入，再於本 thread 回覆 meeting-mate retry。';
+    if (error.details?.status === 'needs_login') return '本機錄影服務保留了舊的登入狀態，尚未開始錄影。需要更新錄影服務才能重新開啟 Meet；此狀態不代表本次會議確實要求登入。';
     if (error.httpStatus === 409) return '錄影服務忙碌或狀態衝突；這次操作未完成，請用 status 查詢。';
     if (error.code === 'service_unavailable') return '本機 Meeting Mate 服務尚未連上。請在 Mac 啟動服務，再用 retry 重試本場。';
     return `${action} 尚未完成（${safeFailure(error)}）。請用 status 查看；原始工作與已完成的建單紀錄仍保留。`;
@@ -197,10 +225,6 @@ export class SlackBinding {
       if (b.sessionId) return reply('這場已經取得錄影 session，會繼續檢查收尾及轉寫，不重新加入會議。');
       const { meetings } = await this.api.meetings();
       const current = meetings.find(j => j.url === b.url);
-      if (current?.state === 'needs_login') {
-        b.stage = 'needs_login'; await this.save();
-        return reply('Meet 仍需要 Google 登入，請在 Meeting Mate 專用 Chrome 完成登入後再 retry。');
-      }
       // An explicit retry can attach the session started by the user signing in
       // on the retained Meet page, but never a session predating this request.
       if (b.stage === 'needs_login' && current?.sessionId && current.joinedAt >= b.requestedAt &&
@@ -209,7 +233,8 @@ export class SlackBinding {
         return reply('已依你的 retry 綁定登入後開始的這場會議，後續錄影與逐字稿進度會回到此 thread。');
       }
       if (meetings.some(active)) return reply('目前有會議活動，先用 status 確認，不重送加入。');
-      b.requestedAt = this.now(); b.stage = 'joining'; b.baselineSessions = meetings.map(j => j.sessionId).filter(Boolean); await this.save();
+      b.requestedAt = this.now(); b.stage = 'joining'; delete b.joinReceipt;
+      b.baselineSessions = meetings.map(j => j.sessionId).filter(Boolean); await this.save();
       const receipt = await this.api.join(b.url, { idempotencyKey: stableId(eventId) });
       b.joinReceipt = receipt.status;
       if (receipt.status !== 'queued') b.stage = 'join_unconfirmed';
@@ -272,7 +297,7 @@ export class SlackBinding {
     }
     lines.push('\nAction items：');
     lines.push(...b.minutes.actions.map((i, n) => `${n + 1}. ${escape(i.title)}\n${escape(i.description)}\n負責人：${escape(i.owner ?? '待確認')}；Linear 指派：${i.assigneeId ?? '未指派'}；期限：${i.dueDate ?? '待確認'}\n依據：${evidence(i)}`));
-    lines.push('\n發起人回覆 meeting-mate approve 後才會建立 Linear issue；未知負責人維持未指派。');
+    lines.push('\n具建單權限的發起人或管理者回覆 meeting-mate approve 後才會建立 Linear issue；未知負責人維持未指派。');
     const result = lines.join('\n');
     return result;
   }
@@ -346,7 +371,7 @@ export class SlackBinding {
         const job = meetings.find(j => j.url === b.url);
         if (!b.sessionId && job?.state === 'needs_login') {
           b.stage = 'needs_login';
-          await this.emit(`needs-login:${b.key}`, b, '[Meeting Mate] Meet 需要 Google 登入，尚未確認開始錄影。請在 Meeting Mate 專用 Chrome 登入，再回覆 meeting-mate retry。');
+          await this.emit(`needs-login:${b.key}`, b, '[Meeting Mate] 目前停在 Google 登入畫面，尚未錄影。完成登入後會自動繼續入會；slash 指令請在頻道主畫面使用。');
           continue;
         }
         const freshAttempt = job?.attemptAt >= b.requestedAt - 2000 && b.joinReceipt === 'queued';
@@ -462,11 +487,11 @@ export class SlackBinding {
         for (const found of page.messages) {
           if (this.config.channelIds.length && !this.config.channelIds.includes(found.channel_id)) continue;
           if (Number(found.message_ts) < this.state.startedAt || this.state.processed[`${found.channel_id}:${found.message_ts}`]) continue;
-          if (!this.permitted(found.author_user_id) && found.author_user_id !== this.botId) continue;
           let thread = found.thread_ts;
           try { thread ||= new URL(found.permalink).searchParams.get('thread_ts'); } catch { /* Resolve through the API below. */ }
           const message = { ts: found.message_ts, user: found.author_user_id, text: found.content, ...(found.is_author_bot ? { bot_id: 'search' } : {}) };
-          if (!command(message.text, { botId: this.botId, direct: found.channel_id.startsWith('D'), bound: !!thread && !!this.state.threads[`${found.channel_id}:${thread}`] })) continue;
+          const parsed = command(message.text, { botId: this.botId, direct: found.channel_id.startsWith('D'), bound: !!thread && !!this.state.threads[`${found.channel_id}:${thread}`] });
+          if (!parsed || (!this.permitted(found.author_user_id, parsed.action) && found.author_user_id !== this.botId)) continue;
           if (!thread) {
             const replies = await this.readThread(found.channel_id, found.message_ts);
             const original = replies.find(m => m.ts === found.message_ts);

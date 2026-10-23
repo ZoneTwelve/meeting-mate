@@ -53,11 +53,14 @@ export function meetPage(operation = 'snapshot', value = '') {
   const controls = buttons.map(label);
   // A visible leave control is stronger evidence than chat text containing words like "Ask to join".
   let phase = 'loading';
-  if (find(patterns.leave)) phase = 'in_call';
+  if (location.hostname === 'accounts.google.com') phase = 'needs_login';
+  else if (location.href === 'about:blank') phase = 'loading';
+  else if (location.hostname !== 'meet.google.com') phase = 'redirected';
+  else if (find(patterns.leave)) phase = 'in_call';
   else if (/you('ve| have) been removed|you can.t join|was denied|request.*denied|meeting.*ended|you left the meeting|已遭移除|無法加入|无法加入|會議已結束|会议已结束|已離開會議/i.test(body)) phase = 'ended';
   else if (/asking to be let in|waiting for (someone|the host)|you.ll join (the call|the meeting) when|someone.*let you in|等待.*(允許|允许|加入)|正在要求加入|已提出加入要求/i.test(body)) phase = 'waiting_approval';
   else if (find(patterns.join) || name) phase = 'prejoin';
-  else if (location.hostname === 'accounts.google.com' || /sign in|登入|登录/i.test(body)) phase = 'needs_login';
+  else if (/sign in to (?:join|continue)|you (?:need|must) (?:to )?sign in|請先登入|请先登录|必須登入|必须登录|需要登入|需要登录/i.test(body)) phase = 'needs_login';
   const mic = find(patterns.microphoneOff) ? 'on' : find(patterns.microphoneOn) ? 'off' :
     controls.some((text) => /microphone problem|microphone.*permission|麥克風.*權限/i.test(text)) ? 'blocked' : 'unknown';
   const camera = find(patterns.cameraOff) ? 'on' : find(patterns.cameraOn) ? 'off' :

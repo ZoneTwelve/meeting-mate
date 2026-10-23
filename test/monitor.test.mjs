@@ -157,6 +157,31 @@ test('manual trigger bypasses the hourly check and asks to join immediately', as
   await f.monitor.tick();
   assert.equal(f.calls.filter((call) => call === 'join').length, 1);
 });
+test('an explicit join reopens a stale login page instead of rejecting forever', async () => {
+  const f = fixture({ phase: 'needs_login' });
+  await f.monitor.tick(); assert.equal(f.monitor.jobs[0].state, 'needs_login');
+  const release = f.monitor.browser.release;
+  f.monitor.browser.release = async value => { await release(value); f.snapshot.phase = 'prejoin'; };
+  f.advance(1000);
+  assert.equal(f.monitor.requestJoin(url).status, 'queued');
+  await f.monitor.tick();
+  assert.equal(f.monitor.jobs[0].state, 'joining');
+  assert.equal(f.calls.filter(x => x === 'join').length, 1);
+  assert.equal(f.calls.filter(x => Array.isArray(x) && x[0] === 'release').length, 1);
+});
+test('a page that became a live call while a fresh join was queued is preserved', async () => {
+  const f = fixture({ phase: 'needs_login' });
+  await f.monitor.tick(); assert.equal(f.monitor.requestJoin(url).status, 'queued');
+  f.snapshot.phase = 'in_call'; await f.monitor.tick();
+  assert.equal(f.monitor.jobs[0].state, 'recording');
+  assert.equal(f.calls.filter(x => Array.isArray(x) && x[0] === 'release').length, 0);
+});
+test('a redirect away from Meet closes the stale page and allows a new explicit join', async () => {
+  const f = fixture({ phase: 'redirected' }); await f.monitor.tick();
+  assert.equal(f.monitor.jobs[0].state, 'redirected'); assert.equal(f.monitor.jobs[0].page, null);
+  f.snapshot.phase = 'prejoin'; assert.equal(f.monitor.requestJoin(url).status, 'queued'); await f.monitor.tick();
+  assert.equal(f.monitor.jobs[0].state, 'joining');
+});
 test('an ad-hoc Meet link is one-shot and is not polled again after it ends', async () => {
   const f = fixture();
   f.monitor.jobs[0].nextCheckAt = 3600000;

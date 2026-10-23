@@ -17,7 +17,7 @@ export function commandServer({ signingSecret, appId, teamId, accept, now = Date
     };
     try {
       if (req.url === '/healthz' && req.method === 'GET') return send(200, { ok: true });
-      if (req.url !== '/meeting') return send(404, { error: 'not_found' });
+      if (!['/meeting', '/meeting-stop'].includes(req.url)) return send(404, { error: 'not_found' });
       if (req.method !== 'POST') return send(405, { error: 'method_not_allowed' });
       if (!/^application\/x-www-form-urlencoded(?:\s*;|$)/i.test(req.headers['content-type'] ?? '') || req.headers['content-encoding']) return send(415, { error: 'unsupported_body' });
       const chunks = []; let size = 0;
@@ -32,11 +32,13 @@ export function commandServer({ signingSecret, appId, teamId, accept, now = Date
       const form = new URLSearchParams(raw.toString('utf8'));
       const fields = ['api_app_id', 'team_id', 'channel_id', 'user_id', 'command', 'text', 'trigger_id'];
       if (fields.some(key => form.getAll(key).length !== 1)) return send(400, { error: 'invalid_form' });
-      if (form.get('team_id') !== teamId || form.get('api_app_id') !== appId || form.get('command') !== '/meeting') return send(403, { error: 'wrong_installation' });
+      const slash = form.get('command');
+      if (form.get('team_id') !== teamId || form.get('api_app_id') !== appId || !['/meeting', '/meeting-stop'].includes(slash) ||
+          (req.url === '/meeting-stop' && slash !== '/meeting-stop')) return send(403, { error: 'wrong_installation' });
       if (!/^[CDG][A-Z0-9]+$/.test(form.get('channel_id')) || !/^[UW][A-Z0-9]+$/.test(form.get('user_id')) || !form.get('trigger_id') || form.get('text').length > 8000) return send(400, { error: 'invalid_form' });
       // Only normalized, necessary fields cross the boundary; response_url,
       // verification token, signature, and raw body are never stored or logged.
-      const text = await accept({ channel: form.get('channel_id'), user: form.get('user_id'), text: form.get('text'), trigger: form.get('trigger_id') });
+      const text = await accept({ channel: form.get('channel_id'), user: form.get('user_id'), text: form.get('text'), trigger: form.get('trigger_id'), slash });
       send(200, { response_type: 'ephemeral', text });
     } catch {
       log('Slash command could not be persisted.');

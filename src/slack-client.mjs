@@ -20,13 +20,16 @@ export class SlackClient {
     const remaining = (this.cooldowns.get(method) ?? 0) - this.now();
     if (remaining > 0) throw new SlackError(method, 'ratelimited', { retryAfter: Math.ceil(remaining / 1000) });
     const url = new URL(method, API), get = GET.has(method);
+    // This endpoint rejects JSON as missing filename/length in live Slack,
+    // despite advertising both content types. Use its supported form encoding.
+    const form = method === 'files.getUploadURLExternal';
     if (get) for (const [key, value] of Object.entries(args)) if (value !== undefined) url.searchParams.set(key, String(value));
     let response;
     try {
       response = await this.fetchImpl(url, {
         method: get ? 'GET' : 'POST', redirect: 'error', signal: AbortSignal.timeout(20_000),
-        headers: { authorization: `Bearer ${this.token}`, 'content-type': 'application/json; charset=utf-8' },
-        ...(get ? {} : { body: JSON.stringify(args) }),
+        headers: { authorization: `Bearer ${this.token}`, 'content-type': form ? 'application/x-www-form-urlencoded' : 'application/json; charset=utf-8' },
+        ...(get ? {} : { body: form ? new URLSearchParams(Object.entries(args).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)])).toString() : JSON.stringify(args) }),
       });
     } catch { throw new SlackError(method, 'connection_failed'); }
     if (response.status === 429) {

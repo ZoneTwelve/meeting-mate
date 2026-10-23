@@ -10,7 +10,7 @@ import { commandServer } from '../src/slack-command-server.mjs';
 
 const args = process.argv.slice(2);
 if (args.includes('--help')) {
-  console.log('pnpm dev:bind [--check | --once]\nLoads .env.yumi. Receives signed POST /meeting on 127.0.0.1:18007 and polls Slack.\n--check: verify credentials and local connectivity without sending messages or starting a listener.\n--once: process one polling cycle without starting a listener.\nCtrl-C stops only this binder; an existing recording continues. See docs/slack-binding.md.');
+  console.log('pnpm dev:bind [--check | --once]\nLoads .env.yumi. Receives signed POST /meeting and /meeting-stop on 127.0.0.1:18007 and polls Slack.\n--check: verify credentials and local connectivity without sending messages or starting a listener.\n--once: process one polling cycle without starting a listener.\nCtrl-C stops only this binder; an existing recording continues. See docs/slack-binding.md.');
 } else if (args.some(arg => !['--check', '--once'].includes(arg)) || args.length > 1) {
   console.error('Use --help for supported arguments.'); process.exitCode = 1;
 } else {
@@ -29,7 +29,7 @@ if (args.includes('--help')) {
     console.log('Slack user and bot authenticated in the same workspace.');
     if (args.includes('--check')) {
       const channels = await bot.conversations();
-      console.log(`Bot can read ${channels.length} joined conversations; command access ${config.allowedUsers.length ? 'uses the configured allowlist' : 'defaults to the user-token owner'}.`);
+      console.log(`Bot can read ${channels.length} joined conversations; meeting/stop access: ${config.meetingAccess}; other operations use the owner/allowlist.`);
       const probe = await user.search('"meeting-mate"', Math.floor(Date.now() / 1000) - 60, Math.ceil(Date.now() / 1000));
       console.log(`Slack message search available (${probe.messages.length} matches; contents omitted).`);
       await api.health(); console.log('Local recorder API reachable.');
@@ -45,7 +45,7 @@ if (args.includes('--help')) {
       if (config.port && !args.includes('--once')) {
         server = commandServer({ signingSecret: config.signingSecret, appId: config.appId, teamId: botAuth.team_id, accept: input => binding.acceptSlash(input) });
         await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.port, '127.0.0.1', resolve); });
-        console.log(`Slash receiver ready: http://127.0.0.1:${config.port}/meeting (signed Slack requests only).`);
+        console.log(`Slash receiver ready: http://127.0.0.1:${config.port}/meeting and /meeting-stop (signed Slack requests only; meeting access: ${config.meetingAccess}).`);
       }
       process.on('SIGINT', stop); process.on('SIGTERM', stop);
       console.log(`Binding active: channel polling every ${config.pollMs / 1000}s, mention search every ${config.searchMs / 1000}s. Recorder lifecycle is unchanged.`);

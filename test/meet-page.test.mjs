@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { meetPage } from '../src/meet-page.mjs';
 
-function fixture({ labels = [], body = '', name = null, hostname = 'meet.google.com', namedLabels = {}, cameraNotice = false, lateCameraNotice = false } = {}) {
+function fixture({ labels = [], body = '', name = null, hostname = 'meet.google.com', href = `https://${hostname}/aaa-bbbb-ccc`, namedLabels = {}, cameraNotice = false, lateCameraNotice = false } = {}) {
   const events = [];
   let observerCallback;
   class Input {
@@ -31,7 +31,7 @@ function fixture({ labels = [], body = '', name = null, hostname = 'meet.google.
   const context = vm.createContext({
     HTMLInputElement: Input, Event: class { constructor(type) { this.type = type; } },
     MutationObserver: class { constructor(callback) { observerCallback = callback; } observe() {} },
-    getComputedStyle: () => ({ visibility: 'visible' }), location: { hostname, href: `https://${hostname}/aaa-bbbb-ccc` },
+    getComputedStyle: () => ({ visibility: 'visible' }), location: { hostname, href },
     document: { title: 'Meet', body: { innerText: body }, documentElement: {},
       getElementById: (id) => id in namedLabels ? { textContent: namedLabels[id] } : null,
       querySelectorAll: (selector) => selector === 'input' ? (input ? [input] : []) : selector.includes('dialog') ? (cameraNotice ? [notice] : []) : selector.includes('button') ? buttons : [] },
@@ -65,6 +65,12 @@ test('waiting, Chinese labels, login and blocked devices', () => {
   const page = fixture({ labels: ['Camera problem. Show more info', 'Microphone problem. Show more info'] });
   assert.equal(page.run().camera, 'blocked');
   assert.equal(page.run().microphone, 'blocked');
+});
+test('marketing redirects and optional sign-in links are not login requirements', () => {
+  assert.equal(fixture({ hostname: '', href: 'about:blank' }).run().phase, 'loading');
+  assert.equal(fixture({ hostname: 'workspace.google.com', body: '登录 Google Meet 立即加入会议' }).run().phase, 'redirected');
+  assert.equal(fixture({ body: 'Sign in to Google Meet' }).run().phase, 'loading');
+  assert.equal(fixture({ body: 'Sign in to join this meeting' }).run().phase, 'needs_login');
 });
 test('People badge counts attendees and prevents chat text from ending a live call', () => {
   const three = fixture({ labels: [{ label: null, text: '3', labelledBy: 'people-label' }], namedLabels: { 'people-label': 'People' }, body: "Someone quoted: you're the only one here" });

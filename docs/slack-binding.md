@@ -29,8 +29,11 @@ APP_ID=YOUR_SLACK_APP_ID
 SIGNING_SECRET=YOUR_SLACK_SIGNING_SECRET
 SLACK_BIND_PORT=18007
 
-# 可選：允許的頻道／使用者 ID，以逗號分隔。
-# 不填頻道則接收 bot 已加入的頻道與 DM；使用者預設只允許 user token 的本人。
+# 預設允許同 workspace 全員加入與停止會議；改成 owner 可限制為本人／allowlist。
+SLACK_BIND_MEETING_ACCESS=workspace
+
+# 可選：允許的頻道／其他操作的使用者 ID，以逗號分隔。
+# 不填頻道則接收 bot 已加入的頻道與 DM；其他操作預設只允許 user token 的本人。
 # SLACK_BIND_CHANNEL_IDS=CEXAMPLE
 # SLACK_BIND_ALLOWED_USER_IDS=UEXAMPLE
 
@@ -50,7 +53,9 @@ pnpm dev:bind
 
 在 Slack App 的 **Slash Commands** 新增 `/meeting`，Request URL 指向自己 tunnel 的 `https://YOUR-TUNNEL/meeting`。tunnel 只轉發 `127.0.0.1:18007`。先邀請同一個 Yumi bot 加入要使用的頻道；binder 以 bot 發送進度訊息，不會自行加入其他頻道。若尚未安裝 slash command 或變更 scopes，依 Slack 管理介面提示重新安裝 App。
 
-18007 只提供 `POST /meeting` 與無資料的 `GET /healthz`，不代理錄影 API、Chrome debugging port 或本機檔案。請勿把既有 8787 或 9222 當成 tunnel 目標。接收器用原始 body 的 HMAC-SHA256、常數時間比較、五分鐘時效與 workspace／App／使用者檢查驗證請求；不使用舊 verification token。不保存 `response_url`、簽章或原始表單。
+另可新增 `/meeting-stop`，Request URL 設為 `https://YOUR-TUNNEL/meeting-stop`（也接受共用 `/meeting` URL）。在頻道主畫面輸入 `/meeting-stop` 或 `/meeting stop`，會送出本機目前會議／待入會工作的停止請求，不需要尋找原 thread；同 workspace 的任何人都可使用。停止會優先於尚未執行的加入指令，且不等待 Slack 訊息發送成功才停止本機工作。
+
+18007 只提供 `POST /meeting`、`POST /meeting-stop` 與無資料的 `GET /healthz`，不代理錄影 API、Chrome debugging port 或本機檔案。請勿把既有 8787 或 9222 當成 tunnel 目標。接收器用原始 body 的 HMAC-SHA256、常數時間比較、五分鐘時效與 workspace／App／使用者檢查驗證請求；不使用舊 verification token。不保存 `response_url`、簽章或原始表單。
 
 HTTP ACK 在本機保存指令後立即回覆 ephemeral 訊息，錄影及網路工作由背景 worker 執行。slash command 本身沒有 thread，因此 bot 會建立一則進度訊息，後續都回到該 thread。這不需要更改線上 Yumi 的 Event Subscription，也不會切換 Socket Mode。tunnel 與 Mac 必須保持連線；免費 tunnel 換網址後要更新 Slack Request URL。
 
@@ -62,6 +67,7 @@ HTTP ACK 在本機保存指令後立即回覆 ephemeral 訊息，錄影及網路
 /meeting https://meet.google.com/abc-defg-hij?pli=1
 /meeting join https://meet.google.com/abc-defg-hij
 /meeting status
+/meeting-stop
 ```
 
 `?pli=1` 等參數會移除，只使用經驗證的 Google Meet 網址。也可在 bot 已加入的頻道送出 `@Yumi 幫我錄影 <Meet 連結>`，或 `meeting-mate join <Meet 連結>`。普通聊天中單獨出現連結不會自動錄影。
@@ -79,11 +85,11 @@ HTTP ACK 在本機保存指令後立即回覆 ephemeral 訊息，錄影及網路
 | `unfollow` | 停止這串的 Linear 跟進提醒 |
 | `close` | Linear 全部完成／取消後，由人確認驗收結案 |
 
-`/meeting stop` 等 slash 控制指令只會在同頻道、同請求人只有一個可用會議 thread 時選中它。有多個時回原 thread 操作，或明確使用 `/meeting stop --thread <thread_ts>`。新的 `/meeting <連結>` 會開新 thread；錄影器忙碌時拒絕另一場，不會取代正在進行的錄影。收到「已受理」不等於開始錄影，須等 `recording` 回報。
+`/meeting stop` 與 `/meeting-stop` 停止本機目前工作；指定 `/meeting stop --thread <thread_ts>` 則只操作該 thread 綁定的場次。`pause` 等其他 slash 控制指令只會在同頻道、同請求人只有一個可用會議 thread 時選中它；有多個時需回原 thread 操作，或明確指定 `--thread <thread_ts>`。新的 `/meeting <連結>` 會開新 thread；錄影器忙碌時拒絕另一場，不會取代正在進行的錄影。收到「已受理」不等於開始錄影，須等 `recording` 回報。
 
-若回報 `needs_login`，先在 Meeting Mate 專用 Chrome 完成 Google 登入，再於原 thread 輸入 `meeting-mate retry`。若保留的 Meet 頁面已在登入後開始一個新 session，這次明確的 retry 會綁定該 session；不會接管早於本次請求的舊錄影。
+`/meeting <連結>` 會自動重新開啟已失效的舊頁面並嘗試加入，不會因歷史 `needs_login` 狀態拒絕新請求。真正停在 Google 登入頁時才提示登入；完成登入後會自動繼續。跳到 Workspace 介紹頁會視為離開會議，不把其中的「登入」文字當成會議要求。主畫面使用 slash 指令；Slack 不支援在 thread 使用自訂 slash command，thread 僅用一般文字 `meeting-mate …` 指令與回報。
 
-預設只有 user token 的本人可以觸發；設定 allowlist 可開放指定同事。已綁定 thread 的變更、建單確認與結案仍只允許發起人或 token 本人。Yumi bot 只能交回紀要，不能替人 approve 或控制錄影。
+預設同 workspace 全員可發起加入與停止，包括停止別人發起的會議。其他操作仍需 user token 本人或 `SLACK_BIND_ALLOWED_USER_IDS` 權限；在既有 thread 內還須是發起人或 token 本人。沒有建單權限的發起人需由 token 本人確認紀要及結案。`SLACK_BIND_MEETING_ACCESS=owner` 可將加入／停止也限制為本人或 allowlist。Yumi bot 只能交回紀要，不能替人 approve 或控制錄影。
 
 ## Yumi 交接與建單
 
