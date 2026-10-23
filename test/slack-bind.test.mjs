@@ -4,76 +4,192 @@ import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHmac } from 'node:crypto';
-import { command, slashCommand, validateMinutes, validateEvidence } from '../src/slack-bind-commands.mjs';
+import { slashCommand, HELP } from '../src/slack-bind-commands.mjs';
 import { commandServer } from '../src/slack-command-server.mjs';
 import { SlackClient } from '../src/slack-client.mjs';
-import { SlackBinding } from '../src/slack-bind.mjs';
+import { SlackBinding, stableId } from '../src/slack-bind.mjs';
 import { BindStore } from '../src/slack-bind-store.mjs';
 import { BindLinear } from '../src/bind-linear.mjs';
 import { bindConfig } from '../src/slack-bind-config.mjs';
 
 // All IDs, names, tokens, and Meet links below are fictitious fixtures.
 const meet = 'https://meet.google.com/abc-defg-hij';
-const minutes = () => ({ decisions: [], openQuestions: [], actions: [{ title: 'Add an example', description: 'Document the fictitious example and verify it.', owner: null, assigneeId: null, dueDate: null, evidence: [{ start: 5, quote: 'Add an example.' }] }] });
-function fixture() {
-  let time = 1700000000000, seq = 0;
-  const state = { version: 1, teamId: 'TTEST', botId: 'UBOT', startedAt: time / 1000 - 1, inbox: {}, threads: {}, processed: {}, outbox: {}, channels: {}, search: {} };
+const mode = 'slash-only-v1';
+function fixture(options = {}) {
+  const state = { version: 1, teamId: 'TTEST', botId: 'UBOT', startedAt: 1700000000, inbox: {}, threads: {}, processed: {}, outbox: {}, channels: {}, search: {} };
   const store = { state, save: async () => {} };
-  const messages = [], uploads = [], created = [], controls = [], issues = new Map(), calls = [];
-  const makeSlack = (user) => ({
-    conversations: async () => [{ id: 'CTEST' }],
-    messages: async (channel, { thread, oldest } = {}) => messages.filter(m => m.channel === channel && (!thread || m.thread_ts === thread || m.ts === thread) && (!oldest || Number(m.ts) >= Number(oldest))),
-    search: async () => ({ messages: [], cursor: '' }),
-    post: async (channel, thread_ts, text, client_msg_id) => {
-      const message = { channel, thread_ts, text, client_msg_id, user, ts: `${time / 1000}.${String(++seq).padStart(6, '0')}` };
-      messages.push(message); return { channel, ts: message.ts };
-    },
-    call: async (method, args) => {
-      calls.push({ method, args });
-      if (method === 'files.getUploadURLExternal') return { file_id: 'FTEST', upload_url: 'https://files.slack.com/upload/test' };
-      if (method === 'files.completeUploadExternal') return { files: [{ id: 'FTEST' }] };
-      if (method === 'files.info') return { file: { permalink: 'https://example.slack.com/files/UBOT/FTEST', shares: { public: { CTEST: [{ thread_ts: Object.values(state.threads)[0]?.ts }] } } } };
-      throw new Error('Unexpected method');
-    },
-    uploadBytes: async (_url, bytes) => uploads.push(JSON.parse(bytes)),
-  });
-  const bot = makeSlack('UBOT'), user = makeSlack('UOWNER');
+  const calls = [];
   const api = {
-    jobs: [], transcripts: [], recordings: [], joins: 0,
-    health: async () => ({ ok: true }), meetings: async () => ({ meetings: api.jobs }),
-    join: async () => { api.joins++; return { status: 'queued' }; },
-    stop: async () => controls.push('stop'), pause: async () => controls.push('pause'), resume: async () => controls.push('resume'),
-    transcriptsList: async () => ({ transcripts: api.transcripts }),
-    transcriptGet: async id => api.transcripts.find(t => t.id === id),
-    recordingsList: async () => ({ recordings: api.recordings }),
-    transcriptCreate: async () => { throw new Error('Unexpected transcript enqueue'); },
+    jobs: [], transcripts: [],
+    meetings: async () => { calls.push('meetings'); return { meetings: api.jobs }; },
+    transcriptsList: async () => { calls.push('transcripts'); return { transcripts: api.transcripts }; },
+    join: async (url, args) => { calls.push({ action: 'join', url, args }); return { status: 'queued' }; },
+    stop: async (url, args) => { calls.push({ action: 'stop', url, args }); return { status: 'stop_queued' }; },
   };
-  const linear = { issue: async id => issues.get(id), create: async input => {
-    if (!issues.has(input.id)) { created.push(input); issues.set(input.id, { ...input, identifier: `TEST-${created.length}`, url: `https://linear.app/example/issue/TEST-${created.length}`, state: { name: 'Todo', type: 'unstarted' } }); }
-    return issues.get(input.id);
-  } };
-  const config = { allowedUsers: [], channelIds: [], meetingAccess: 'owner', searchMs: 300_000, remindMs: 86400_000, handoff: true, linearToken: 'fictitious', linearTeamId: '00000000-0000-4000-8000-000000000001' };
-  const binding = new SlackBinding({ config, store, bot, user, api, linear, identity: { bot: { user_id: 'UBOT', url: 'https://example.slack.com/' }, user: { user_id: 'UOWNER' } }, now: () => time, log: () => {} });
-  const receive = async (text, extra = {}) => {
-    const message = { ts: `${time / 1000}.${String(++seq).padStart(6, '0')}`, user: 'UOWNER', text, ...extra };
-    messages.push({ ...message, channel: 'CTEST' }); await binding.receive(message, { id: 'CTEST' }); return message;
-  };
-  return { binding, state, store, bot, user, api, linear, config, messages, uploads, created, controls, issues, calls, receive, now: () => time, advance: ms => { time += ms; } };
+  // Any Slack history/search/post/upload or Linear operation is a regression.
+  const forbidden = new Proxy({}, { get: (_, key) => { throw new Error(`Unexpected external operation: ${String(key)}`); } });
+  const config = { allowedUsers: [], channelIds: [], meetingAccess: 'workspace' };
+  const binding = new SlackBinding({ config, store, api, bot: forbidden, user: forbidden, linear: forbidden,
+    identity: { bot: { user_id: 'UBOT' }, user: { user_id: 'UOWNER' } }, log: () => {}, ...options });
+  const input = { channel: 'CTEST', user: 'UOWNER', text: meet, trigger: 'example-trigger', slash: '/meeting' };
+  return { binding, state, store, api, calls, config, input };
 }
 
-test('explicit commands, Meet query normalization, and ordinary discussion boundaries', () => {
-  assert.deepEqual(slashCommand(`${meet}?pli=1`), { action: 'join', url: meet, thread: undefined });
-  assert.equal(slashCommand(`join <${meet}?pli=1|meeting>`).url, meet);
-  assert.equal(command(meet, { direct: true }), null);
-  assert.equal(command(`不要錄影 ${meet}`, { direct: true }), null);
-  assert.equal(command(`meeting-mate 請不要錄影 ${meet}`), null);
-  assert.equal(command(`> meeting-mate stop`, { bound: true }), null);
-  assert.equal(command('[Meeting Mate] meeting-mate stop', { bound: true }), null);
-  assert.equal(command(`meeting-mate join ${meet} ${meet}`).action, 'invalid');
-  assert.equal(command('meeting-mate close').action, 'close');
-  assert.equal(slashCommand('stop --thread 1700000000.000001').thread, '1700000000.000001');
-  assert.equal(slashCommand('https://evil.example/').action, 'help');
-  assert.equal(command('stop'), null);
+test('only explicit slash arguments are supported; links are normalized and ordinary chat is rejected', () => {
+  assert.deepEqual(slashCommand(`${meet}?pli=1`), { action: 'join', url: meet });
+  assert.deepEqual(slashCommand(`join <${meet}?pli=1|meeting>`), { action: 'join', url: meet });
+  for (const text of ['', 'help']) assert.equal(slashCommand(text).action, 'help');
+  assert.equal(slashCommand('status').action, 'status');
+  assert.equal(slashCommand('stop').action, 'stop');
+  for (const text of [`@Yumi 幫我錄影 ${meet}`, `meeting-mate join ${meet}`, `不要錄影 ${meet}`, `join ${meet} ${meet}`, 'approve', 'minutes {}', 'follow TEST-1', 'retry', 'stop --thread 1700000000.000001', 'https://evil.example/', 'x'.repeat(8001)]) {
+    assert.equal(slashCommand(text).action, 'invalid', text.slice(0, 80));
+  }
+});
+
+test('ordinary messages and unsupported slash commands cannot enqueue work', async () => {
+  const f = fixture();
+  for (const slash of [undefined, '/other', 'meeting-mate']) await f.binding.acceptSlash({ ...f.input, slash });
+  await f.binding.cycle();
+  assert.deepEqual(f.calls, []); assert.deepEqual(f.state.inbox, {});
+});
+
+test('slash receipt persists before ACK, and retries execute one join without posting a thread', async () => {
+  const f = fixture();
+  assert.match(await f.binding.acceptSlash(f.input), /不代表已開始錄影/);
+  await f.binding.acceptSlash(f.input);
+  assert.deepEqual(f.calls, []); assert.equal(Object.keys(f.state.inbox).length, 1);
+  await Promise.all([f.binding.cycle(), f.binding.cycle()]);
+  await f.binding.acceptSlash(f.input); await f.binding.cycle();
+  assert.equal(f.calls.filter(c => c.action === 'join').length, 1);
+  assert(f.calls.find(c => c.action === 'join').args.idempotencyKey);
+  assert.deepEqual(f.state.threads, {}); assert.deepEqual(f.state.outbox, {});
+  assert.equal(Object.values(f.state.inbox)[0].state, 'done');
+});
+
+test('uncommitted receipts cannot be acknowledged or executed; failed writes are rejected', async () => {
+  const f = fixture(); let resolve, reject, acked = false;
+  f.store.save = () => new Promise((yes, no) => { resolve = yes; reject = no; });
+  const pending = f.binding.acceptSlash(f.input).then(() => { acked = true; });
+  const duplicate = f.binding.acceptSlash(f.input);
+  await f.binding.cycle(); assert.deepEqual(f.calls, []); assert.equal(acked, false);
+  resolve(); await Promise.all([pending, duplicate]); assert.equal(acked, true);
+  const failure = f.binding.acceptSlash({ ...f.input, trigger: 'failed-write' });
+  reject(new Error('Fixture disk full')); await assert.rejects(failure);
+  assert.equal(Object.keys(f.state.inbox).length, 1);
+  f.store.save = async () => {}; await f.binding.cycle();
+  assert.equal(f.calls.filter(c => c.action === 'join').length, 1);
+});
+
+test('workspace members can join, query and stop; optional owner and channel restrictions still work', async () => {
+  const f = fixture();
+  await f.binding.acceptSlash({ ...f.input, user: 'UTEAMMATE' }); await f.binding.cycle();
+  assert.equal(f.calls.filter(c => c.action === 'join').length, 1);
+  await f.binding.acceptSlash({ ...f.input, user: 'UANOTHER', text: '', slash: '/meeting-stop', trigger: 'stop' });
+  await f.binding.cycle(); assert.equal(f.calls.filter(c => c.action === 'stop').length, 1);
+  assert.match(await f.binding.acceptSlash({ ...f.input, user: 'UANOTHER', text: 'status' }), /目前/);
+  f.config.meetingAccess = 'owner';
+  assert.match(await f.binding.acceptSlash({ ...f.input, user: 'UOTHER', trigger: 'restricted' }), /尚未授權/);
+  f.config.allowedUsers = ['UALLOWED'];
+  await f.binding.acceptSlash({ ...f.input, user: 'UALLOWED', trigger: 'allowed' });
+  f.config.channelIds = ['COTHER'];
+  assert.match(await f.binding.acceptSlash({ ...f.input, trigger: 'wrong-channel' }), /未啟用/);
+  assert.equal(Object.keys(f.state.inbox).length, 3);
+});
+
+test('stop takes priority over a full join queue and never depends on Slack message delivery', async () => {
+  const f = fixture();
+  for (let i = 0; i < 100; i++) f.state.inbox[`pending-${i}`] = { id: `pending-${i}`, mode, action: 'join', cmd: { action: 'join', url: meet }, state: 'queued' };
+  assert.match(await f.binding.acceptSlash(f.input), /佇列已滿/);
+  const stop = { ...f.input, slash: '/meeting-stop', text: '', trigger: 'stop-full-queue', user: 'UTEAMMATE' };
+  assert.match(await f.binding.acceptSlash(stop), /已受理停止/);
+  await f.binding.cycle(); await f.binding.acceptSlash(stop); await f.binding.cycle();
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0].action, 'stop'); assert.equal(f.calls[0].url, undefined);
+  assert(f.calls[0].args.idempotencyKey);
+  assert(Object.values(f.state.inbox).filter(i => i.action === 'join').every(i => i.state === 'failed'));
+});
+
+test('/meeting stop is also a stop trigger, while a busy recorder rejects a new join', async () => {
+  const f = fixture();
+  f.api.jobs = [{ state: 'recording', joinedAt: 1700000000 }];
+  await f.binding.acceptSlash(f.input); await f.binding.cycle();
+  assert.equal(f.calls.filter(c => c.action === 'join').length, 0);
+  assert.match(Object.values(f.state.inbox)[0].result, /已有會議/);
+  await f.binding.acceptSlash({ ...f.input, text: 'stop', trigger: 'stop-alias' }); await f.binding.cycle();
+  assert.equal(f.calls.filter(c => c.action === 'stop').length, 1);
+});
+
+test('stop also cancels a join whose receipt is still being persisted', async () => {
+  const f = fixture(); let finishJoinWrite;
+  f.store.save = () => new Promise(resolve => { finishJoinWrite = resolve; });
+  const joining = f.binding.acceptSlash(f.input);
+  f.store.save = async () => {};
+  await f.binding.acceptSlash({ ...f.input, slash: '/meeting-stop', trigger: 'cancel-uncommitted' });
+  await f.binding.cycle();
+  finishJoinWrite(); await joining; await f.binding.cycle();
+  assert.equal(f.calls.filter(c => c.action === 'join').length, 0);
+  assert.equal(f.calls.filter(c => c.action === 'stop').length, 1);
+});
+
+test('old threads, queued replies, transcript handoffs and Linear work stay inert across restart', async () => {
+  const f = fixture();
+  f.state.threads = { transcript: { stage: 'transcribing', transcriptId: 'fixture' }, linear: { stage: 'creating_issues', issues: [{}] }, reminder: { stage: 'following', issues: [{}] } };
+  f.state.outbox = { bot: { state: 'queued', text: 'Private fixture' }, user: { state: 'queued', asUser: true, text: 'Private handoff fixture' } };
+  f.state.inbox.legacy = { id: 'legacy', state: 'queued', cmd: { action: 'join', url: meet } };
+  const oldOutbox = structuredClone(f.state.outbox), oldThreads = structuredClone(f.state.threads);
+  await f.binding.prepare(); await f.binding.cycle(); await f.binding.prepare(); await f.binding.cycle();
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.state.outbox, oldOutbox); assert.deepEqual(f.state.threads, oldThreads);
+  assert.equal(f.state.inbox.legacy.state, 'failed');
+});
+
+test('new durable commands resume after restart, but interrupted operations are never blindly replayed', async () => {
+  const f = fixture();
+  await f.binding.acceptSlash(f.input);
+  f.state.inbox.interrupted = { id: 'interrupted', mode, action: 'stop', state: 'executing', cmd: { action: 'stop' } };
+  await f.binding.prepare(); await f.binding.cycle();
+  assert.equal(f.calls.filter(c => c.action === 'join').length, 1);
+  assert.equal(f.calls.filter(c => c.action === 'stop').length, 0);
+  assert.match(f.state.inbox.interrupted.result, /尚未確認/);
+});
+
+test('status is requested explicitly, shows phase progress, and never shares transcript text or private paths', async () => {
+  const f = fixture();
+  f.api.jobs = [{ state: 'recording', joinedAt: 1700000000, url: meet, recordingFile: '/private/fixture.mp4' }];
+  f.api.transcripts = [{ id: 'fixture-job', state: 'running', phase: 'diarizing', progress: 100, result: { text: 'private transcript fixture' } }];
+  await f.binding.cycle(); assert.deepEqual(f.calls, []);
+  const reply = await f.binding.acceptSlash({ ...f.input, text: 'status' });
+  assert.match(reply, /recording/); assert.match(reply, /diarizing 100\.0%/); assert.match(reply, /不代表整份/);
+  assert(!reply.includes(meet)); assert(!reply.includes('/private/')); assert(!reply.includes('private transcript'));
+  assert.deepEqual(f.state.inbox, {}); assert.deepEqual(f.state.outbox, {});
+});
+
+test('status has a bounded HTTP response even when local calls stall', async () => {
+  const f = fixture({ statusTimeoutMs: 20 }); let signal;
+  f.api.meetings = async options => { signal = options.signal; return new Promise(() => {}); };
+  f.api.transcriptsList = async () => new Promise(() => {});
+  const reply = await f.binding.acceptSlash({ ...f.input, text: 'status' });
+  assert.match(reply, /逾時/); assert(signal.aborted); assert.deepEqual(f.state.inbox, {});
+});
+
+test('local failures remain available on explicit status without automatic retries or private error details', async () => {
+  const f = fixture();
+  f.api.join = async () => { f.calls.push({ action: 'join' }); throw Object.assign(new Error('PRIVATE ERROR BODY'), { code: 'service_unavailable' }); };
+  await f.binding.acceptSlash(f.input); await f.binding.cycle(); await f.binding.cycle();
+  const reply = await f.binding.acceptSlash({ ...f.input, text: 'status' });
+  assert.match(reply, /service_unavailable/); assert(!reply.includes('PRIVATE ERROR BODY'));
+  assert.equal(f.calls.filter(c => c.action === 'join').length, 1);
+});
+
+test('quiet configuration needs no user search or Linear credentials and ignores legacy workflow settings', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'meeting-bind-config-'));
+  await writeFile(path.join(directory, '.env.yumi'), 'BOT_USER_OAUTH_TOKEN=fake-bot\nSLACK_BIND_PORT=0\nSLACK_BIND_LINEAR_ENV=/nonexistent/private.env\nSLACK_BIND_HANDOFF=true\n');
+  const config = await bindConfig(directory, {});
+  assert.equal(config.port, 0); assert.equal(config.meetingAccess, 'workspace');
+  assert.equal(config.userToken, undefined); assert.equal(config.handoff, undefined); assert.equal(config.linearToken, undefined);
+  await assert.rejects(bindConfig(directory, { SLACK_BIND_MEETING_ACCESS: 'owner' }), /Owner access/);
+  assert.equal((await bindConfig(directory, { SLACK_BIND_MEETING_ACCESS: 'owner', SLACK_BIND_ALLOWED_USER_IDS: 'UOWNER' })).meetingAccess, 'owner');
+  await assert.rejects(bindConfig(directory, { SLACK_BIND_MEETING_ACCESS: 'invalid' }), /MEETING_ACCESS/);
+  await assert.rejects(bindConfig(directory, { SLACK_BIND_PORT: '18007' }), /SIGNING_SECRET/);
 });
 
 test('signed HTTP requests persist before ack; reject tampering, replay age, cross-app and oversized input', async t => {
@@ -97,180 +213,13 @@ test('signed HTTP requests persist before ack; reject tampering, replay age, cro
   assert.equal((await request({ fields: { api_app_id: 'AOTHER' } })).status, 403);
   assert.equal((await request({ fields: { text: 'x'.repeat(17000) } })).status, 413);
   assert.equal((await request({ endpoint: '/v1/meetings/join' })).status, 404);
+  assert.equal((await request({ endpoint: '/slack/events' })).status, 404);
+  assert.equal((await fetch(url + '/meeting', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'event_callback', event: { text: `meeting-mate join ${meet}` } }) })).status, 415);
   assert.equal(accepted.length, 1);
   assert.equal((await request({ fields: { command: '/meeting-stop', text: '' }, endpoint: '/meeting-stop' })).status, 200);
   assert.equal(accepted[1].slash, '/meeting-stop');
   assert.equal((await request({ fields: { command: '/meeting-stop', text: '' } })).status, 200);
   assert.equal((await request({ endpoint: '/meeting-stop' })).status, 403);
-});
-
-test('slash retries create exactly one thread and one join; unauthorized users cannot enqueue', async () => {
-  const f = fixture(), input = { channel: 'CTEST', user: 'UOWNER', text: `${meet}?pli=1`, trigger: 'fake-trigger' };
-  await f.binding.acceptSlash({ ...input, user: 'UOTHER' }); assert.equal(Object.keys(f.state.inbox).length, 0);
-  await f.binding.acceptSlash(input); await f.binding.acceptSlash(input);
-  assert.equal(f.api.joins, 0); assert.equal(Object.keys(f.state.inbox).length, 1);
-  await f.binding.drainSlash(); await f.binding.flush(); await f.binding.drainSlash(); await f.binding.flush();
-  await f.binding.acceptSlash(input); await f.binding.drainSlash();
-  assert.equal(f.api.joins, 1); assert.equal(Object.keys(f.state.threads).length, 1);
-  assert.equal(f.messages.filter(m => !m.thread_ts).length, 1);
-  assert.equal(Object.values(f.state.threads)[0].url, meet);
-});
-
-test('recording → local transcript → Yumi → human approval → one issue → human acceptance', async () => {
-  const f = fixture(); const original = await f.receive(`meeting-mate join ${meet}`);
-  const b = Object.values(f.state.threads)[0];
-  await f.binding.receive(original, { id: 'CTEST' }); assert.equal(f.api.joins, 1);
-  f.api.jobs = [{ url: meet, sessionId: 'session-new', state: 'recording', joinedAt: f.now(), attemptAt: f.now(), recordingFile: '/private/fictitious-recording.mp4' }];
-  await f.binding.progress(); assert.equal(b.sessionId, 'session-new');
-  const transcript = { id: '00000000-0000-4000-8000-000000000002', sessionId: 'session-new', state: 'completed', result: { jobId: '00000000-0000-4000-8000-000000000002', speakers: [{ id: 'S1', label: 'Speaker 1' }], segments: [{ start: 5, end: 8, text: 'Add an example.', speakerId: 'S1' }] } };
-  f.api.jobs[0] = { ...f.api.jobs[0], state: 'stopped', joinedAt: null, recordingFile: null };
-  f.api.transcripts = [transcript]; await f.binding.progress(); await f.binding.flush();
-  assert.equal(b.stage, 'awaiting_minutes'); assert.equal(f.uploads.length, 1);
-  assert.equal(f.uploads[0].speakersAreIdentities, false);
-  assert(f.messages.some(m => m.user === 'UOWNER' && m.text.includes('[Meeting Mate] 自動交接')));
-  assert.equal(f.created.length, 0);
-  await f.receive(`meeting-mate minutes ${JSON.stringify(minutes())}`, { thread_ts: b.ts, user: 'UBOT', bot_id: 'BFIXTURE' });
-  assert.equal(b.stage, 'awaiting_approval');
-  await f.receive('meeting-mate approve', { thread_ts: b.ts }); // Preview not delivered yet.
-  assert.equal(f.created.length, 0); await f.binding.flush();
-  await f.receive('meeting-mate approve', { thread_ts: b.ts, user: 'UBOT', bot_id: 'BFIXTURE' });
-  await f.receive('meeting-mate approve', { thread_ts: b.ts, user: 'UOTHER' });
-  assert.equal(f.created.length, 0);
-  await f.receive('meeting-mate approve', { thread_ts: b.ts });
-  await f.receive('meeting-mate approve', { thread_ts: b.ts });
-  assert.equal(f.created.length, 1); assert.equal(b.stage, 'following');
-  assert.equal(f.created[0].assigneeId, undefined); assert(f.created[0].description.includes('5s：Add an example.'));
-  await f.binding.deliverTranscript(b, transcript); assert.equal(b.stage, 'following'); assert.equal(f.uploads.length, 1);
-  f.issues.get(b.issues[0].id).state = { name: 'Done', type: 'completed' };
-  await f.binding.follow(); assert.equal(b.stage, 'awaiting_acceptance');
-  await f.receive('meeting-mate close', { thread_ts: b.ts }); assert.equal(b.stage, 'closed');
-});
-
-test('outbox reconciles a lost Slack response after restart without duplicating a reply', async () => {
-  const f = fixture(); const post = f.bot.post;
-  f.bot.post = async (...args) => { await post(...args); throw new Error('fixture network loss'); };
-  await f.binding.emit('root-test', { channel: 'CTEST' }, '[Meeting Mate] Test receipt');
-  await f.binding.flush(); assert.equal(f.messages.length, 1);
-  f.advance(16_000); f.bot.post = post; await f.binding.flush();
-  assert.equal(f.messages.length, 1); assert.equal(Object.values(f.state.outbox)[0].state, 'sent');
-});
-
-test('a replacement draft cannot change approved work while issue creation is retrying', async () => {
-  const f = fixture(); await f.receive(`meeting-mate join ${meet}`);
-  const b = Object.values(f.state.threads)[0];
-  b.transcriptId = 'fixture'; b.minutes = minutes(); b.approvedAt = f.now(); b.stage = 'creating_issues';
-  f.api.transcriptGet = async () => { throw new Error('Must not fetch replacement transcript'); };
-  const replacement = minutes(); replacement.actions[0].title = 'Unapproved replacement';
-  await f.receive(`meeting-mate minutes ${JSON.stringify(replacement)}`, { thread_ts: b.ts });
-  assert.equal(b.minutes.actions[0].title, 'Add an example'); assert.equal(b.stage, 'creating_issues');
-});
-
-test('ack waits for persistence; concurrent delivery does not execute or ack an uncommitted command', async () => {
-  const f = fixture(); let resolve, reject;
-  f.store.save = () => new Promise((yes, no) => { resolve = yes; reject = no; });
-  const input = { channel: 'CTEST', user: 'UOWNER', trigger: 'persist-test', text: meet };
-  let acked = false;
-  const pending = f.binding.acceptSlash(input).then(() => { acked = true; });
-  const duplicate = f.binding.acceptSlash(input);
-  await f.binding.drainSlash(); assert.equal(f.api.joins, 0); assert.equal(acked, false);
-  resolve(); await Promise.all([pending, duplicate]); assert.equal(acked, true);
-  const failure = f.binding.acceptSlash({ ...input, trigger: 'persist-failure' });
-  reject(new Error('Fixture disk full')); await assert.rejects(failure);
-  assert.equal(Object.keys(f.state.inbox).length, 1);
-});
-
-test('search resumes fixed-window pagination after restart; a busy page is not skipped', async () => {
-  const f = fixture(); let calls = [];
-  f.user.search = async (query, after, before, cursor) => { calls.push({ query, after, before, cursor }); return { messages: [], cursor: cursor ? '' : 'fixture-next-page' }; };
-  await f.binding.search(); const initial = calls[0];
-  assert.equal(f.state.search[initial.query].cursor, 'fixture-next-page');
-  f.advance(301_000); await f.binding.search();
-  assert.equal(calls[2].after, initial.after); assert.equal(calls[2].before, initial.before); assert.equal(calls[2].cursor, 'fixture-next-page');
-  assert.equal(f.state.search[initial.query].after, undefined);
-});
-
-test('long draft is not accepted unseen, and a reopened Linear issue prevents close', async () => {
-  const f = fixture(); await f.receive(`meeting-mate join ${meet}`); const b = Object.values(f.state.threads)[0];
-  b.transcriptId = 'fixture'; f.api.transcriptGet = async () => ({ state: 'completed', result: { segments: [{ start: 5, text: 'Add an example.' }] } });
-  const long = minutes(); long.actions = Array.from({ length: 8 }, () => ({ ...long.actions[0], description: 'x'.repeat(3900) }));
-  await f.receive(`meeting-mate minutes ${JSON.stringify(long)}`, { thread_ts: b.ts });
-  assert.equal(b.minutes, undefined);
-  b.stage = 'awaiting_acceptance'; b.issues = [{ id: 'fixture-issue' }];
-  f.issues.set('fixture-issue', { state: { type: 'started' } });
-  await f.receive('meeting-mate close', { thread_ts: b.ts }); assert.equal(b.stage, 'following');
-});
-
-test('does not capture stale sessions, control another session, or accept fabricated evidence', async () => {
-  const f = fixture(); f.api.jobs = [{ url: meet, sessionId: 'old', state: 'stopped' }];
-  await f.receive(`meeting-mate join ${meet}`); const b = Object.values(f.state.threads)[0];
-  await f.binding.progress(); assert.equal(b.sessionId, undefined);
-  f.api.jobs = [{ url: meet, sessionId: 'new', attemptAt: f.now(), state: 'recording', joinedAt: f.now() }];
-  await f.binding.progress(); assert.equal(b.sessionId, 'new');
-  f.api.jobs[0].sessionId = 'other';
-  await f.receive('meeting-mate stop', { thread_ts: b.ts }); assert.deepEqual(f.controls, []);
-  delete b.sessionId; delete b.joinReceipt;
-  f.api.jobs[0].sessionId = 'old';
-  await f.receive('meeting-mate stop', { thread_ts: b.ts }); assert.deepEqual(f.controls, []);
-  assert.throws(() => validateEvidence(validateMinutes(minutes()), { segments: [{ start: 100, text: 'Different words.' }] }), /紀要依據/);
-});
-
-test('bounded commands reject ambiguous slash controls and bot control loops', async () => {
-  const f = fixture();
-  f.state.threads.a = { key: 'a', channel: 'CTEST', ts: '1700000000.000001', requester: 'UOWNER', stage: 'following', url: meet };
-  f.state.threads.b = { key: 'b', channel: 'CTEST', ts: '1700000000.000002', requester: 'UOWNER', stage: 'following', url: meet };
-  assert.match(await f.binding.acceptSlash({ channel: 'CTEST', user: 'UOWNER', trigger: 'x', text: 'pause' }), /多個/);
-  assert.equal(Object.keys(f.state.inbox).length, 0);
-  await f.receive(`meeting-mate join ${meet}`, { user: 'UOTHER', bot_id: 'BFIXTURE' });
-  assert.equal(f.api.joins, 0);
-});
-
-test('legacy login rejection does not assert an unverified requirement, and retry only attaches a new session', async () => {
-  const f = fixture(); f.api.jobs = [{ url: meet, state: 'needs_login', sessionId: 'old-session' }];
-  f.api.join = async () => { throw Object.assign(new Error('fixture login required'), { code: 'http_error', httpStatus: 409, details: { status: 'needs_login' } }); };
-  await f.receive(`meeting-mate join ${meet}`); const b = Object.values(f.state.threads)[0];
-  assert.equal(b.stage, 'needs_login'); assert(Object.values(f.state.outbox).some(x => x.text.includes('不代表本次會議確實要求登入')));
-  f.api.jobs[0] = { url: meet, state: 'recording', sessionId: 'old-session', joinedAt: f.now() };
-  await f.receive('meeting-mate retry', { thread_ts: b.ts }); assert.equal(b.sessionId, undefined);
-  f.api.jobs[0].sessionId = 'new-after-login';
-  await f.receive('meeting-mate retry', { thread_ts: b.ts }); assert.equal(b.sessionId, 'new-after-login');
-});
-test('emergency slash stop works without a thread and before Slack delivery', async () => {
-  const f = fixture();
-  const input = { channel: 'CTEST', user: 'UTEAMMATE', text: '', trigger: 'stop-example', slash: '/meeting-stop' };
-  await f.binding.acceptSlash(input); assert.equal(Object.keys(f.state.inbox).length, 0);
-  await f.binding.acceptSlash({ channel: 'CTEST', user: 'UOWNER', text: meet, trigger: 'pending-join' });
-  f.api.stop = async (url, options) => { assert.equal(url, undefined); assert(options.idempotencyKey); f.controls.push('stop'); return { status: 'stop_queued' }; };
-  await f.binding.acceptSlash({ ...input, user: 'UOWNER' });
-  await f.binding.drainSlash();
-  assert.deepEqual(f.controls, ['stop']); assert.equal(f.messages.length, 0); assert.equal(f.api.joins, 0);
-  await f.binding.drainSlash(); assert.deepEqual(f.controls, ['stop']);
-  await f.binding.flush(); await f.binding.drainSlash(); await f.binding.flush();
-  assert(f.messages.some(m=>m.text.includes('stop_queued')));
-});
-test('workspace members can start and stop meetings without gaining Linear approval rights', async () => {
-  const f = fixture(); f.config.meetingAccess = 'workspace';
-  await f.binding.acceptSlash({ channel: 'CTEST', user: 'UTEAMMATE', text: meet, trigger: 'team-join' });
-  assert.equal(Object.keys(f.state.inbox).length, 1);
-  await f.binding.acceptSlash({ channel: 'CTEST', user: 'UANOTHER', text: 'stop', trigger: 'team-stop' });
-  assert.equal(Object.keys(f.state.inbox).length, 2);
-  await f.binding.acceptSlash({ channel: 'CTEST', user: 'UTEAMMATE', text: 'approve', trigger: 'team-approval' });
-  assert.equal(Object.keys(f.state.inbox).length, 2);
-  await f.receive(`meeting-mate join ${meet}`, { user: 'UTEAMMATE' }); assert.equal(f.api.joins, 1);
-  const b = Object.values(f.state.threads)[0];
-  f.api.jobs[0] = { url: meet, state: 'joining', joinRequestedAt: f.now(), attemptAt: f.now() };
-  await f.receive('meeting-mate stop', { user: 'UANOTHER', thread_ts: b.ts });
-  assert.deepEqual(f.controls, ['stop']);
-  await f.binding.acceptSlash({ channel: 'CTEST', user: 'UANOTHER', text: `stop --thread ${b.ts}`, trigger: 'target-stop' });
-  assert.equal(Object.keys(f.state.inbox).length, 3);
-});
-test('a full normal command queue still accepts an emergency stop', async () => {
-  const f = fixture();
-  for (let i = 0; i < 100; i++) f.state.inbox[`pending-${i}`] = { id: `pending-${i}`, state: 'queued', cmd: { action: 'join', url: meet } };
-  assert.match(await f.binding.acceptSlash({ channel: 'CTEST', user: 'UOWNER', text: meet, trigger: 'full' }), /佇列已滿/);
-  assert.match(await f.binding.acceptSlash({ channel: 'CTEST', user: 'UOWNER', text: '', trigger: 'full-stop', slash: '/meeting-stop' }), /已受理緊急停止/);
-  f.api.stop = async () => { f.controls.push('stop'); return { status: 'already_stopped' }; };
-  await f.binding.drainSlash();
-  assert.deepEqual(f.controls, ['stop']); assert.equal(f.api.joins, 0);
 });
 
 test('private state is atomic under concurrent writes and enforces workspace identity and singleton', async t => {
@@ -319,14 +268,4 @@ test('Linear deterministic issue ID recovers a lost mutation response without a 
   } });
   await assert.rejects(linear.create(input), /linear_connection_failed/);
   assert.equal((await linear.create(input)).id, input.id); assert.equal(writes, 1);
-});
-
-test('env file is parsed as data; signed listener can be disabled explicitly', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'meeting-bind-config-'));
-  await writeFile(path.join(directory, '.env.yumi'), 'USER_OAUTH_TOKEN=fake-user\nBOT_USER_OAUTH_TOKEN=fake-bot\nSLACK_BIND_PORT=0\n');
-  const config = await bindConfig(directory, {}); assert.equal(config.port, 0); assert.equal(config.pollMs, 30_000);
-  assert.equal(config.meetingAccess, 'workspace');
-  assert.equal((await bindConfig(directory, { SLACK_BIND_MEETING_ACCESS: 'owner' })).meetingAccess, 'owner');
-  await assert.rejects(bindConfig(directory, { SLACK_BIND_MEETING_ACCESS: 'invalid' }), /MEETING_ACCESS/);
-  await assert.rejects(bindConfig(directory, { SLACK_BIND_PORT: '18007' }), /SIGNING_SECRET/);
 });

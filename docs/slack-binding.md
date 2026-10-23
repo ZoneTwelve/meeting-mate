@@ -1,47 +1,41 @@
-# Yumi Meeting Mate：Slack binding
+# Yumi Meeting Mate：Slack 指令
 
-`pnpm dev:bind` 把 Slack 指令、既有的本機錄影／逐字稿 API、線上 Yumi 與 Linear 接在一起。錄影與語音辨識仍在 Mac 執行。會後會將文字逐字稿複本上傳到發起指令的 Slack thread，交給既有 Yumi 整理；影音檔不會上傳。
+`pnpm dev:bind` 只接收 `/meeting` 與 `/meeting-stop`。每次指令透過原 HTTP 請求回覆操作人可見的 ephemeral 訊息，不建立頻道訊息或進度 thread。
+
+錄影、影音驗證與轉寫仍由本機服務執行。binder 不讀取一般訊息、mention、DM 或 thread，不上傳逐字稿、不代替使用者喚醒 Yumi，也不執行 Linear 建單、追蹤或提醒。原本線上 Yumi 的 Event Subscription 與一般對話由原服務處理；binder 不修改其設定，也不切換 Socket Mode。
 
 ```mermaid
 flowchart TD
-    A[Slack /meeting Meet連結] --> B[HTTPS tunnel → 本機 18007]
-    C[Slack mention／thread 輪詢] --> D[指令與本機持久佇列]
-    B --> D
-    D --> E[本機 API：入會、錄影、轉寫]
-    E --> F[文字檔交接至原 Slack thread]
-    F --> G[Yumi 整理附原句與時間戳的紀要]
-    G --> H[發起人確認 approve]
-    H --> I[Linear 建單與狀態追蹤]
-    I --> J[Slack 回報／到期提醒]
-    J --> K[發起人驗收 close]
+    A[Slack /meeting 或 /meeting-stop] --> B[HTTPS tunnel → 本機 18007]
+    B --> C[簽章驗證與本機指令佇列]
+    C --> D[本次 HTTP 回覆：僅操作人可見]
+    C --> E[本機 API：加入或停止]
+    E --> F[錄影收尾與本機轉寫]
+    G[Slack /meeting status] --> B
 ```
 
-## 啟動與 Slack 設定
+## 啟動與設定
 
-先確認原有 Meeting Mate 服務已啟動。binder 是獨立程序，不會啟動、重建、重簽、重啟或停止原生錄影器；Ctrl-C 僅停止接收指令與跟進。
+先啟動原有 Meeting Mate 本機服務。binder 是獨立程序；啟動、停止或更新它不會重啟錄影器或轉寫程序。此功能不安裝 LaunchAgent。
 
-在被 Git 忽略的 `.env.yumi` 填入下列設定（以下全部是佔位值）：
+在被 Git 忽略的 `.env.yumi` 填入以下設定（值皆為佔位值）：
 
 ```dotenv
-USER_OAUTH_TOKEN=YOUR_SLACK_USER_TOKEN
 BOT_USER_OAUTH_TOKEN=YOUR_SLACK_BOT_TOKEN
 APP_ID=YOUR_SLACK_APP_ID
 SIGNING_SECRET=YOUR_SLACK_SIGNING_SECRET
 SLACK_BIND_PORT=18007
 
-# 預設允許同 workspace 全員加入與停止會議；改成 owner 可限制為本人／allowlist。
+# 預設同 workspace 全員皆可加入、停止與查詢。
 SLACK_BIND_MEETING_ACCESS=workspace
 
-# 可選：允許的頻道／其他操作的使用者 ID，以逗號分隔。
-# 不填頻道則接收 bot 已加入的頻道與 DM；其他操作預設只允許 user token 的本人。
+# 可選：限制允許的頻道，以逗號分隔。
 # SLACK_BIND_CHANNEL_IDS=CEXAMPLE
-# SLACK_BIND_ALLOWED_USER_IDS=UEXAMPLE
 
-# 建單與追蹤使用自己的 Linear API key。也可直接設 LINEAR_TOKEN。
-# 指定既有 dotenv 檔時只讀取資料，不執行 shell 指令或變數展開。
-# SLACK_BIND_LINEAR_ENV=/absolute/path/to/private.env
-# SLACK_BIND_LINEAR_TEAM_ID=YOUR_LINEAR_TEAM_UUID
-# SLACK_BIND_LINEAR_PROJECT_ID=YOUR_LINEAR_PROJECT_UUID
+# 可選：若改成 owner，需指定 allowlist，或以 user token 確認本人。
+# SLACK_BIND_MEETING_ACCESS=owner
+# SLACK_BIND_ALLOWED_USER_IDS=UEXAMPLE
+# USER_OAUTH_TOKEN=YOUR_SLACK_USER_TOKEN
 ```
 
 ```sh
@@ -49,19 +43,22 @@ pnpm dev:bind --check
 pnpm dev:bind
 ```
 
-`--check` 只驗證憑證、Slack 讀取與本機連線，不發訊息、不開始會議。`--once` 跑一輪訊息處理，不啟動 HTTP listener；一般使用保持 `pnpm dev:bind` 在終端機執行。此功能不安裝 LaunchAgent。
+`--check` 只驗證 Slack 身分及本機連線，不讀取聊天或發訊息。`--once` 處理一次已保存的 slash 指令，不啟動 HTTP listener。一般使用保持 `pnpm dev:bind` 在終端機執行。Ctrl-C 僅停止接收器。
 
-在 Slack App 的 **Slash Commands** 新增 `/meeting`，Request URL 指向自己 tunnel 的 `https://YOUR-TUNNEL/meeting`。tunnel 只轉發 `127.0.0.1:18007`。先邀請同一個 Yumi bot 加入要使用的頻道；binder 以 bot 發送進度訊息，不會自行加入其他頻道。若尚未安裝 slash command 或變更 scopes，依 Slack 管理介面提示重新安裝 App。
+在 Slack App 的 **Slash Commands** 設定：
 
-另可新增 `/meeting-stop`，Request URL 設為 `https://YOUR-TUNNEL/meeting-stop`（也接受共用 `/meeting` URL）。在頻道主畫面輸入 `/meeting-stop` 或 `/meeting stop`，會送出本機目前會議／待入會工作的停止請求，不需要尋找原 thread；同 workspace 的任何人都可使用。停止會優先於尚未執行的加入指令，且不等待 Slack 訊息發送成功才停止本機工作。
+| Command | Request URL |
+| --- | --- |
+| `/meeting` | `https://YOUR-TUNNEL/meeting` |
+| `/meeting-stop` | `https://YOUR-TUNNEL/meeting-stop` |
 
-18007 只提供 `POST /meeting`、`POST /meeting-stop` 與無資料的 `GET /healthz`，不代理錄影 API、Chrome debugging port 或本機檔案。請勿把既有 8787 或 9222 當成 tunnel 目標。接收器用原始 body 的 HMAC-SHA256、常數時間比較、五分鐘時效與 workspace／App／使用者檢查驗證請求；不使用舊 verification token。不保存 `response_url`、簽章或原始表單。
+同一條 tunnel 轉發 `127.0.0.1:18007`，不要改動 Event Subscription 的 Request URL。接收器只提供這兩個 POST 路徑及無資料的 `GET /healthz`，不代理錄影 API、Chrome debugging port 或本機檔案。tunnel 與 Mac 必須保持連線；tunnel 網址變更後需更新兩個 slash Request URL。
 
-HTTP ACK 在本機保存指令後立即回覆 ephemeral 訊息，錄影及網路工作由背景 worker 執行。slash command 本身沒有 thread，因此 bot 會建立一則進度訊息，後續都回到該 thread。這不需要更改線上 Yumi 的 Event Subscription，也不會切換 Socket Mode。tunnel 與 Mac 必須保持連線；免費 tunnel 換網址後要更新 Slack Request URL。
+此接收器只使用 bot token 的 `auth.test` 確認 workspace 與安裝身分；`owner` 未設定 allowlist 時另以 user token 的 `auth.test` 確認本人。不需要為它新增訊息搜尋、history、檔案上傳或 `chat:write` 權限。Slash commands 本身需要 `commands` scope；既有 Yumi 使用的權限保留由原服務管理。
 
-## 指令
+## 使用
 
-以下 Meet code 是虛構示意值，不是可用會議：
+以下 Meet code 是虛構示意值：
 
 ```text
 /meeting https://meet.google.com/abc-defg-hij?pli=1
@@ -70,56 +67,26 @@ HTTP ACK 在本機保存指令後立即回覆 ephemeral 訊息，錄影及網路
 /meeting-stop
 ```
 
-`?pli=1` 等參數會移除，只使用經驗證的 Google Meet 網址。也可在 bot 已加入的頻道送出 `@Yumi 幫我錄影 <Meet 連結>`，或 `meeting-mate join <Meet 連結>`。普通聊天中單獨出現連結不會自動錄影。
+- `/meeting <連結>`：保存加入請求後回覆「已受理」，由本機背景 worker 呼叫錄影 API。移除 `?pli=1` 等參數，只接受經驗證的 Google Meet 網址。已有會議進行中時拒絕另開一場。
+- `/meeting-stop`：停止本機目前會議或待入會請求，任何 workspace 成員皆可使用。也接受 `/meeting stop`。停止指令優先處理，取消尚未執行的加入請求，不依賴 Slack 發訊息是否成功。
+- `/meeting status`：即時查詢目前會議狀態、最近三個轉寫工作的狀態／階段進度，以及本人在此頻道最近三次指令的結果。不顯示逐字稿內容、會議網址或本機檔案路徑。查詢逾時會在本次回覆提示稍後再查。
+- `/meeting` 或 `/meeting help`：顯示用法。
 
-在進度 thread 回覆以下任一指令（加上 `meeting-mate` 前綴最明確）：
+「已受理」代表指令已保存在本機，並不代表成功入會、開始錄影或已完成停止。以 `/meeting status` 回報的實際狀態為準。轉寫百分比是當前階段的進度；階段 100% 不代表整份逐字稿已完成，`completed` 才是完成。
 
-| 指令 | 行為 |
-| --- | --- |
-| `status` | 本機連線、該串進度、實際會議狀態與任務連結 |
-| `pause` / `resume` / `stop` | 操作綁定場次；stop 會離開並完成錄影檔 |
-| `transcript` | 查看／恢復已完成逐字稿的交接 |
-| `retry` | 明確重試未確認的入會，或失敗的轉寫與交接 |
-| `approve` | 確認目前已送達的紀要草稿，建立 Linear action items |
-| `follow TEST-123` | 綁定既有 Linear issue，也接受 issue URL |
-| `unfollow` | 停止這串的 Linear 跟進提醒 |
-| `close` | Linear 全部完成／取消後，由人確認驗收結案 |
+自訂 slash command 請在頻道主畫面使用。一般文字 `meeting-mate ...`、`@Yumi ...`、thread 回覆、`approve`、`follow` 等不再是此接收器的入口。登入與主持人准入仍沿用本機錄影服務流程；需要人工登入時在專用 Chrome 處理，再用 status 查詢。
 
-`/meeting stop` 與 `/meeting-stop` 停止本機目前工作；指定 `/meeting stop --thread <thread_ts>` 則只操作該 thread 綁定的場次。`pause` 等其他 slash 控制指令只會在同頻道、同請求人只有一個可用會議 thread 時選中它；有多個時需回原 thread 操作，或明確指定 `--thread <thread_ts>`。新的 `/meeting <連結>` 會開新 thread；錄影器忙碌時拒絕另一場，不會取代正在進行的錄影。收到「已受理」不等於開始錄影，須等 `recording` 回報。
+停止會議後，已啟用的錄影收尾與自動轉寫由原本本機服務繼續，不依賴 binder。完成後透過 CLI、REST API 或 MCP 取得逐字稿，見 [transcript.md](transcript.md)。不會另發 Slack 完成通知、每 5% 更新或五分鐘心跳。
 
-`/meeting <連結>` 會自動重新開啟已失效的舊頁面並嘗試加入，不會因歷史 `needs_login` 狀態拒絕新請求。真正停在 Google 登入頁時才提示登入；完成登入後會自動繼續。跳到 Workspace 介紹頁會視為離開會議，不把其中的「登入」文字當成會議要求。主畫面使用 slash 指令；Slack 不支援在 thread 使用自訂 slash command，thread 僅用一般文字 `meeting-mate …` 指令與回報。
+## 恢復與資料界線
 
-預設同 workspace 全員可發起加入與停止，包括停止別人發起的會議。其他操作仍需 user token 本人或 `SLACK_BIND_ALLOWED_USER_IDS` 權限；在既有 thread 內還須是發起人或 token 本人。沒有建單權限的發起人需由 token 本人確認紀要及結案。`SLACK_BIND_MEETING_ACCESS=owner` 可將加入／停止也限制為本人或 allowlist。Yumi bot 只能交回紀要，不能替人 approve 或控制錄影。
-
-## Yumi 交接與建單
-
-binder 用 bot token 上傳逐字稿 JSON，再用 user token 在同 thread 發出帶有 `[Meeting Mate] 自動交接` 標記的 `@Yumi` 訊息。這個明確標記的自動訊息會以 token 本人的身分出現；它用來喚醒忽略 bot 訊息的既有線上 Yumi。設 `SLACK_BIND_HANDOFF=false` 可停用文字上傳及此訊息，逐字稿保留在本機。
-
-Yumi 需要能讀取 Slack 附件，並在相同 thread 回覆**一則不包 code fence** 的資料訊息：
-
-```text
-meeting-mate minutes {"decisions":[],"openQuestions":[],"actions":[{"title":"事項","description":"內容與驗收條件","owner":null,"assigneeId":null,"dueDate":null,"evidence":[{"start":5,"quote":"這裡必須是逐字稿原句"}]}]}
-```
-
-`decisions` 與 `openQuestions` 的項目使用 `text`、`evidence`；每個 action 使用上例欄位。每條 evidence 的 `start` 是 segment 開始秒數，`quote` 必須出現在該時間的原文中。檢查只證明引用存在，不證明推論正確；草稿會顯示內容、負責人、Linear assignee UUID、期限及依據，仍需人工確認。過長草稿須由 Yumi 精簡後重送，不能略過顯示直接建單。
-
-Speaker 編號不是已確認姓名。沒有明確負責人／日期就留 `null`；有 owner 文字也不會自動猜測 Linear 使用者。`assigneeId` 僅能使用已核對的 Linear UUID。紀要解析或依據不符時不建單；人可修正並重送同樣格式。
-
-只有送達草稿後的 `approve` 才開始建單。每個 action 使用固定 UUID，請求逾時後先查既有 issue，再恢復剩餘項目，避免一次重試建立多份任務。建單範圍是配置的 team／project；描述附原 Slack thread、逐字稿工作 ID 與引用。已建單後修訂應直接更新既有 issue。
-
-每五分鐘讀取 Linear 狀態，狀態變更時回報原 thread，到期未完成的事項預設每日提醒一次。不自動私訊其他人、不猜進度，也不根據口頭說法自動關閉任務。全部標記完成／取消後，請求人仍需檢查交付內容並 `close`；結案時會重新讀取 Linear 防止誤關已重開的工作。
-
-## 輪詢、恢復與限制
-
-- 頻道及已綁定 thread 預設每 30 秒讀取；mention／`meeting-mate` 搜尋每 300 秒補漏。使用 `assistant.search.context` 的 granular search scopes，不要求舊 `search:read`。
-- 只處理第一次啟動之後的指令。以 Slack message timestamp 去重，保存分頁 cursor、時間水位與固定搜尋窗口；搜尋向前重疊十分鐘容納索引延遲。搜尋不是永久可靠的事件佇列，bot 未加入的頻道、長期未索引或 API 權限不足仍可能收不到，slash 是即時入口。
-- 預設需要 bot 的 `chat:write`、`channels:read/history`、`groups:read/history`、`im:read/history`、`files:write/read`；user token 需要 `chat:write`、可讀 thread 的 history scopes 及所需範圍的 `search:read.public/private/im/mpim`。slash command 需要 `commands`。現有 Yumi 還須其原本的 mention/event scopes。
-- 遇到 429 依 `Retry-After` 暫停該 API。發送中斷時先以固定訊息 ID／內容核對 Slack 紀錄，再重試；外部 API 無法提供完全的 exactly-once 保證，讀取權限或索引延遲仍會影響恢復。
-- 狀態存於 `.meeting-mate/slack-bind/state.json`，目錄 `0700`、檔案 `0600`、原子更新，包含會議連結、紀要、綁定資料與待發文字，屬私有資料。單一程序鎖避免同一 checkout 重複接收；換 workspace／bot 時拒絕套用舊狀態。檔案上限 32 MiB；長期使用需在停止 binder 後人工封存已完成資料。
-- 本機錄影 API 未連上時可先接收指令並回報失敗，服務恢復後用 `retry`。已開始的錄影不會因 binder 退出而停止。程序在 mutation 中斷時不盲目重送，會回報需確認的狀態。
-- 目前每次查詢最近 100 份錄影／轉寫工作；很久以前、已超出列表的未交接場次需在本機人工處理。逐字稿與 Speaker 分群品質沿用 [transcript.md](transcript.md) 的限制。
-
-可調整 `SLACK_BIND_POLL_SECONDS`（最低 15）、`SLACK_BIND_SEARCH_SECONDS`（最低 60）、`SLACK_BIND_REMIND_SECONDS`（最低 300）。`SLACK_BIND_PORT=0` 完全停用 HTTP 接收器，仍可輪詢。`SLACK_BIND_ENV` 可指定另一個私有 dotenv 檔。
+- 使用原始 body 的 HMAC-SHA256、常數時間比較、五分鐘時效及 App／workspace／使用者檢查驗證請求。不保存 `response_url`、verification token、簽章或原始表單。
+- 加入與停止指令保存成功才 ACK；以 trigger 衍生固定 ID 去重，再向本機 API 傳遞 idempotency key。重送同一請求不會建立另一場會議。
+- 重啟後可恢復新版尚未執行的 slash 指令。執行途中中斷的操作不盲目重送，結果標為未確認；請先使用 status，再決定是否重新下指令。執行失敗也不自動重試。
+- 升級時停用舊版待處理指令。舊 thread、outbox、逐字稿交接及 Linear 跟進資料保留在本機，但不恢復執行或補發訊息。既有錄影、轉寫與已建立的 Linear issue 保留。
+- `.meeting-mate/slack-bind/state.json` 含私有操作與歷史資料，目錄 `0700`、檔案 `0600`、原子更新，不得提交 Git。單一程序鎖避免重複接收；換 workspace／bot 時拒絕載入舊狀態。上限 32 MiB，長期使用需在停止 binder 後人工封存。
+- 舊 `SLACK_BIND_POLL_SECONDS`、`SLACK_BIND_SEARCH_SECONDS`、`SLACK_BIND_REMIND_SECONDS`、`SLACK_BIND_HANDOFF` 及 `SLACK_BIND_LINEAR_*` 設定不再啟用背景功能，也不讀取其指定的 Linear dotenv 檔。
+- `SLACK_BIND_PORT=0` 停用 HTTP listener，僅處理已保存的新版 slash 指令；不改用 Slack 輪詢。`SLACK_BIND_ENV` 可指定另一個私有 dotenv 檔。
 
 ## 驗證
 
@@ -129,6 +96,6 @@ pnpm run check
 pnpm dev:bind --check
 ```
 
-單元與本機 HTTP 測試使用虛構資料、假的 Slack／Linear／錄影服務，涵蓋簽章、逾時重送、權限、完整狀態流程、證據校驗、固定 UUID、跨 session 保護與私有狀態。它們不等於真實 Meet 錄影或線上 Yumi 整理成功。實際整合驗收需另走一場經授權的會議，核對 Slack thread、完整本機逐字稿與 Linear 結果。
+單元與本機 HTTP 測試使用虛構資料及假的錄影服務，涵蓋簽章、去重、保存失敗、workspace 權限、停止優先、背景靜默、舊資料恢復界線，以及狀態查詢逾時。測試不發送真實 Slack 訊息、不加入或停止真實 Meet，也不驗證語音辨識品質。
 
-參考 Slack 官方文件：[Slash commands](https://docs.slack.dev/interactivity/implementing-slash-commands/)、[簽章驗證](https://docs.slack.dev/authentication/verifying-requests-from-slack/)、[Real-time search](https://docs.slack.dev/reference/methods/assistant.search.context/)、[外部檔案上傳](https://docs.slack.dev/reference/methods/files.getUploadURLExternal/)、[完成上傳](https://docs.slack.dev/reference/methods/files.completeUploadExternal/)、[Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode/)。
+參考 Slack 官方文件：[Slash commands 與 HTTP 回覆](https://docs.slack.dev/interactivity/implementing-slash-commands/)、[簽章驗證](https://docs.slack.dev/authentication/verifying-requests-from-slack/)、[Events API Request URL](https://docs.slack.dev/apis/events-api/using-http-request-urls/)。
