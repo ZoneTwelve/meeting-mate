@@ -92,5 +92,7 @@ test('dismisses a camera notice inserted after the camera is enabled', () => {
   const page = fixture({ cameraNotice: true, lateCameraNotice: true });
   assert.equal(page.run('dismissCameraNotice'), false);
   page.revealNotice();
+  assert.equal(page.noticeButton.clicks, 0);
+  assert.equal(page.run('dismissCameraNotice'), true);
   assert.equal(page.noticeButton.clicks, 1);
 });

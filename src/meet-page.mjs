@@ -25,13 +25,9 @@ export function meetPage(operation = 'snapshot', value = '') {
       acknowledge.click();
       return true;
     };
-    // The notice can be inserted after cameraOn has already returned.
-    if (!globalThis.__meetingMateCameraNoticeObserver && typeof MutationObserver !== 'undefined') {
-      const observer = new MutationObserver(dismiss);
-      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true,
-        attributeFilter: ['class', 'style', 'aria-hidden'] });
-      globalThis.__meetingMateCameraNoticeObserver = observer;
-    }
+    // The monitor checks again each tick for notices that appear later. Avoid
+    // observing Meet's DOM: reading layout inside its mutation callbacks can
+    // keep the renderer busy and prevent the next recorder health check.
     return dismiss();
   }
   const patterns = {
