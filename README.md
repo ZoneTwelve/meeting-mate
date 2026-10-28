@@ -66,6 +66,8 @@ MEET_USERNAME=Yumi
 
 在 `config.json` 把 `meetingUrls` 換成自己的 Meet 連結。範例檔與本文件中的 `abc-defg-hij` 都是示意值，不是可用會議。
 
+若只想透過 Slack、CLI、API 或 MCP 手動加入，把 `meetingUrls` 設為 `[]`。服務啟動後會等待指令；手動加入的會議只執行一次，停止或結束後不會每小時重新加入。非空清單則會啟用固定排程。
+
 ### 2. 首次準備錄影器與模型
 
 **已安裝並授權的使用者跳過錄影器建置與重新授權**；一般 JavaScript／文件更新不需要重建原生 App。

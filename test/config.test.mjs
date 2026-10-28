@@ -11,6 +11,11 @@ test('guest name, deduplicated URLs and local paths', () => {
   assert.equal(config.pollIntervalMs, 3600000);
   assert.equal(config.recorderApp, '/tmp/meeting-mate/.meeting-mate/Meeting Mate Recorder.app');
 });
+test('an explicitly empty meeting list enables manual-only operation', () => {
+  const config = normalizeConfig({ meetingUrls: [] }, { MEET_USERNAME: 'Yumi' });
+  assert.deepEqual(config.meetingUrls, []);
+  assert.throws(() => normalizeConfig({}, { MEET_USERNAME: 'Yumi' }));
+});
 test('only genuine Google Meet URLs are accepted', () => {
   for (const value of ['http://meet.google.com/aaa-bbbb-ccc', 'https://meet.google.com.evil.test/aaa-bbbb-ccc', 'https://name:secret@meet.google.com/aaa-bbbb-ccc', 'https://meet.google.com/', `${url}/extra`, 'https://meet.google.com:9000/aaa-bbbb-ccc']) {
     assert.throws(() => meetUrl(value));
@@ -19,7 +24,7 @@ test('only genuine Google Meet URLs are accepted', () => {
 test('invalid names, ports and intervals fail early', () => {
   const raw = { meetingUrls: [url] };
   assert.throws(() => normalizeConfig(raw, {}), /MEET_USERNAME/);
-  for (const extra of [{ cdpPort: 1.5 }, { healthPort: 99999 }, { pollIntervalSeconds: 0 }, { segmentSeconds: 1 }, { meetingUrls: [] }]) {
+  for (const extra of [{ cdpPort: 1.5 }, { healthPort: 99999 }, { pollIntervalSeconds: 0 }, { segmentSeconds: 1 }, { meetingUrls: url }]) {
     assert.throws(() => normalizeConfig({ ...raw, ...extra }, { MEET_USERNAME: 'Yumi' }));
   }
 });

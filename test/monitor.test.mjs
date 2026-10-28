@@ -30,6 +30,35 @@ function fixture({ extra = {}, phase = 'prejoin', allowed = true, cameraReady = 
     } });
   return { monitor, calls, snapshot, recorders, advance: (ms) => { now += ms; }, allow: () => { allowed = true; } };
 }
+test('manual-only operation stays idle until a command and never reschedules a stopped call', async () => {
+  const f = fixture({ extra: { meetingUrls: [] } });
+  await f.monitor.tick();
+  f.advance(3600000);
+  await f.monitor.tick();
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.monitor.isBusy(), false);
+
+  assert.equal(f.monitor.requestJoin(url).status, 'queued');
+  await f.monitor.tick();
+  assert.equal(f.monitor.jobs[0].oneShot, true);
+  f.snapshot.phase = 'in_call';
+  await f.monitor.tick();
+  assert.equal(f.monitor.jobs[0].state, 'recording');
+  assert.equal(f.monitor.requestControl('stop').status, 'stop_queued');
+  await f.monitor.tick();
+  assert.equal(f.monitor.jobs[0].state, 'stopped');
+  assert.equal(f.monitor.jobs[0].nextCheckAt, null);
+  const callCount = f.calls.length;
+  f.advance(7200000);
+  await f.monitor.tick();
+  assert.equal(f.calls.length, callCount);
+  assert.equal(f.monitor.isBusy(), false);
+
+  f.snapshot.phase = 'prejoin';
+  assert.equal(f.monitor.requestJoin(url).status, 'queued');
+  await f.monitor.tick();
+  assert.equal(f.monitor.jobs[0].state, 'joining');
+});
 test('fills Yumi and asks once, but never records before admission', async () => {
   const f = fixture();
   await f.monitor.tick();

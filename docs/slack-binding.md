@@ -18,6 +18,8 @@ flowchart TD
 
 先啟動原有 Meeting Mate 本機服務。binder 是獨立程序；啟動、停止或更新它不會重啟錄影器或轉寫程序。此功能不安裝 LaunchAgent。
 
+只使用 slash 指令、不要自動重複入會時，在私有 `config.json` 設定 `"meetingUrls": []`，再執行 `pnpm start`。服務會等待 `/meeting`；`/meeting-stop` 結束後不會自動重新加入。非空清單仍會依原設定週期嘗試入會。
+
 在被 Git 忽略的 `.env.yumi` 填入以下設定（值皆為佔位值）：
 
 ```dotenv
