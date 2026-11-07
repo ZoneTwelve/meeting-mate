@@ -4,7 +4,22 @@
 
 本輪包含 API、MCP、錄影測試與**自動本機逐字稿／Speaker 分群**。姓名 mapping 未實作，公開 repo 發布另經隱私稽核。能力與風險 ID 見 [requirements.md](requirements.md)，未完成項目見 [Todo.md](../Todo.md)。
 
-### 已收到的整合驗證結果
+### 2026-11-07 錄影閉環驗收
+
+以 Computer Use 在 Arc 實際建立兩個獨立的新 Meet、核准 Yumi、分享固定測試分頁音訊，並分別退出會議。第一場完全結束後才開始第二場；第二場使用不同的 session 與新錄影檔案。兩場的本機自動 Whisper 工作均 completed，`verify:meeting` 均 exit 0。私人報告、錄影與逐字稿只留在忽略目錄。
+
+| 證據 | 結果與範圍 |
+| --- | --- |
+| L2 原生 WebRTC 合成影音 | `pnpm run test:live` 通過；10.085 秒、H.264／AAC、147 video frames、469 audio frames、peak −31.70 dB、20 個不同畫面。此層只驗證本機產生並經 WebRTC 接收的測試音。 |
+| L3 第一場 Meet | 四個 MP4（48.085、92.0965、126.103333、132.1 秒）均重新解碼並確認音訊訊號。首段為設定／入場音，明確列為 setup；其餘語音片段由本機 faster-whisper small 驗出固定測試詞。 |
+| RC01／RC02 | 辨識出「藍色火車」「紅色蘋果」「綠色火箭」，暫停中播放的「紫色香蕉」沒有出現；續錄保留約 92.10 秒時間軸間隔。 |
+| L3 第二場 Meet／RC03 | 一個新 MP4，辨識出中文「藍色火車」與英文「blue train」；來源不沿用第一場 session／檔案。未據此判定 Speaker 分群正確率。 |
+| 收尾與匯出 | 兩場均觀察到 Arc 已離開會議，Yumi 空房退出後完成自動轉錄；JSON／TXT／SRT／VTT 均實際下載檢查。 |
+| RC05／RC06 | 空房離開與實際小數時長檔案解碼通過；20 秒內返回的重置情境未執行。 |
+
+本輪驗證的是上述兩場受控 Meet 的分享分頁語音。另一台裝置的真人麥克風、多小時會議、RC04 完整靜音案例與 Speaker 身分／準確率仍須分別驗收；既有無聲音軌不能靠重新轉寫補回。
+
+### 歷史整合驗證結果（2026-10-23）
 
 以下是整合者回報的證據；本次文件整合沒有重跑 native、操作會議、重啟服務或重簽 App。中途測試結果不自動涵蓋後續改動。
 
@@ -143,6 +158,22 @@ pnpm exec node scripts/meet-rehearsal.mjs
 | RC06 小數時長影片 | 本機驗證時使用例如 224.068333 秒的影片 metadata | 子程序逾時值必須是有界整數；不能因小數毫秒使可播放錄影被標成 failed。回歸單元測試只證明參數正確，另需真檔案解碼。 |
 
 每個案例記錄 `pass`／`fail`／`blocked`／`not_run`、開始與停止時間、錄影片段／session 對應、音量、人工聽辨、轉寫終態與原句差異。證據存在 `.meeting-mate/validation/`；公開文件只能保留去識別的結果摘要。分享分頁須先核對標題為「Meeting Mate 測試音源」，避免選到含私人資料的其他分頁或整個螢幕。尚未完成上述實際操作的案例，維持 `not_run`。
+
+### 錄影閉環的自動判定
+
+主持人由 Computer Use 在 Arc 建立新會議、允許 Yumi、分享固定測試分頁，播放完成後從 Arc 退出並關閉會議分頁。驗收不再依賴使用者回答有沒有聽到。每個獨立場次使用新 session；暫停／續錄則另外測試同 session 的分段，兩種情境不得混稱。
+
+```sh
+# manifest 含真實 session／recording ID，只能保存在本機忽略目錄。
+pnpm run verify:meeting -- --manifest .meeting-mate/validation/case.json
+pnpm run test:meeting-validation
+```
+
+驗證器等待指定會議結束與本機 Whisper 工作完成，重新解碼該工作引用的全部 MP4，逐一比對大小／mtime、session、影音 frames 與音訊訊號。每個應有語音的片段必須有 Whisper 文字，且命中測試前設定的語句；暫停中的排除標記不能出現，指定的暫停間隔必須保留。第二場可指定 `previousSessionId`／`previousRecordingIds`，拒絕沿用前一場的 session 或檔案。最後實際下載 JSON／TXT／SRT／VTT；全部通過才 exit 0。
+
+manifest 使用 `version: 1`、`meetingUrl`、`sessionId`、`startedAt` 與非空的 `expectations: [{id, alternatives, recordingId?}]`。`alternatives` 是字面語句的可接受寫法，例如繁簡體；不執行自訂正則或命令。選填 `forbiddenPhrases`、`expectedRecordingCount`、`pauseGap: {beforeId, afterId, minimumSeconds}`。只有明確宣告的 `setupRecordingIds` 可免除「該片段有辨識文字」要求，音訊／檔案檢查仍必須通過，且整場不可用空結果通過。
+
+報告保存在 `.meeting-mate/validation/closed-loop-*.json`，權限 `0600`；stdout 只顯示階段、判定、數量及報告位置，不印逐字稿或真實會議連結。只做已結束場次的驗證，不自行加入、退出、重啟服務或重建錄影 App。Computer Use 的開會／關會結果仍須由代理實際觀察；CLI 不假稱它能讀取 Arc 主持人畫面。邏輯測試與真實 Meet／Whisper 的證據分開保存。
 
 ## L3：真實 Meet 驗收（歷史整合輪次未執行）
 

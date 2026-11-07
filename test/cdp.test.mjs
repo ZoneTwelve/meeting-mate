@@ -18,6 +18,16 @@ test('CDP command and evaluation results', async (t) => {
   assert.equal(await client.evaluate('1'), 'Yumi');
   assert.equal(client.pending.size, 0);
 });
+test('evaluation opts into user activation only for explicit UI actions', async (t) => {
+  const requests = [];
+  const client = await server(t, (socket, message) => {
+    requests.push(message.params);
+    socket.send(JSON.stringify({ id: message.id, result: { result: { value: true } } }));
+  });
+  await client.evaluate('snapshot()');
+  await client.evaluate('join()', { userGesture: true });
+  assert.deepEqual(requests.map(item => item.userGesture), [false, true]);
+});
 test('CDP commands time out and release pending requests', async (t) => {
   const client = await server(t, () => {});
   await assert.rejects(client.send('Never.answers'), /timeout/);

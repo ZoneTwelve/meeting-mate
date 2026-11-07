@@ -28,7 +28,7 @@ function fixture({ extra = {}, phase = 'prejoin', allowed = true, cameraReady = 
         stop: async () => { calls.push('stop'); return { file: recorder.file }; }, health: () => {} };
       recorders.push(recorder); return recorder;
     } });
-  return { monitor, calls, snapshot, recorders, advance: (ms) => { now += ms; }, allow: () => { allowed = true; } };
+  return { monitor, page, calls, snapshot, recorders, advance: (ms) => { now += ms; }, allow: () => { allowed = true; } };
 }
 test('manual-only operation stays idle until a command and never reschedules a stopped call', async () => {
   const f = fixture({ extra: { meetingUrls: [] } });
@@ -75,8 +75,21 @@ test('recording starts only in-call, before enabling the synthetic camera', asyn
   await f.monitor.tick();
   assert.equal(f.monitor.jobs[0].state, 'recording');
   assert.ok(f.calls.indexOf('start') < f.calls.indexOf('cameraOn'));
+  assert.ok(f.calls.indexOf('resumeAudio') < f.calls.indexOf('start'));
   assert.ok(f.calls.indexOf('cameraOn') < f.calls.indexOf('dismissCameraNotice'));
   assert.match(f.monitor.jobs[0].detail, /camera enabled/);
+});
+test('playback errors do not leave a meeting; final silent audio is exposed as a warning', async () => {
+  const f = fixture({ phase: 'in_call' });
+  const originalRun = f.page.run;
+  f.page.run = async operation => operation === 'resumeAudio' ? { paused: 1, errors: ['NotAllowedError'] } : originalRun(operation);
+  await f.monitor.tick();
+  assert.equal(f.monitor.jobs[0].state, 'recording');
+  assert.match(f.monitor.jobs[0].audioPlaybackWarning, /blocked/);
+  f.recorders[0].stop = async () => ({ file: '/tmp/test.mp4', audioSignal: { status: 'silent' } });
+  f.snapshot.phase = 'ended';
+  await f.monitor.tick();
+  assert.match(f.monitor.jobs[0].audioWarning, /digital silence/);
 });
 test('no physical camera fallback in an existing unconfigured Chrome', async () => {
   const f = fixture({ phase: 'in_call', cameraReady: false });

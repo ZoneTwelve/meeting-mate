@@ -55,7 +55,7 @@ export class Browser {
     const args = [
       `--remote-debugging-port=${this.config.cdpPort}`, '--remote-debugging-address=127.0.0.1',
       `--user-data-dir=${this.config.profileDir}`, '--no-first-run', '--no-default-browser-check',
-      '--disable-session-crashed-bubble',
+      '--disable-session-crashed-bubble', '--autoplay-policy=no-user-gesture-required',
       ...(this.config.cameraIndicator ? ['--use-fake-device-for-media-stream', `--use-file-for-fake-video-capture=${this.config.cameraFile}`, `--use-file-for-fake-audio-capture=${this.config.cameraAudioFile}`] : []),
       'about:blank',
     ];

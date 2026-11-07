@@ -46,8 +46,8 @@ export class CdpConnection {
       });
     });
   }
-  async evaluate(expression) {
-    const result = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+  async evaluate(expression, { userGesture = false } = {}) {
+    const result = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, userGesture });
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
     return result.result?.value;
   }

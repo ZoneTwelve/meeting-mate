@@ -86,6 +86,9 @@ export class SlackBinding {
         if (meetings.status === 'fulfilled') {
           const current = meetings.value.meetings.filter(active);
           lines.push(current.length ? `目前會議：${current.map(j => label(j.state)).join('、')}。` : '目前沒有進行中或待加入的會議。');
+          if (meetings.value.meetings.some(j => j.audioWarning || j.audioPlaybackWarning)) {
+            lines.push('錄影音訊警告：最近片段為靜音／音量過低，或會議聲音無法播放；請檢查收音。');
+          }
         } else lines.push(`無法確認會議狀態（${safeFailure(meetings.reason)}）。`);
         if (transcripts.status === 'fulfilled') {
           for (const job of transcripts.value.transcripts) {

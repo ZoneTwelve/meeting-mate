@@ -170,6 +170,13 @@ test('status has a bounded HTTP response even when local calls stall', async () 
   const reply = await f.binding.acceptSlash({ ...f.input, text: 'status' });
   assert.match(reply, /逾時/); assert(signal.aborted); assert.deepEqual(f.state.inbox, {});
 });
+test('explicit status reports silent audio without exposing private warning details', async () => {
+  const f = fixture();
+  f.api.jobs = [{ state: 'stopped', audioWarning: '/private/recording.mp4 contains silence' }];
+  const reply = await f.binding.acceptSlash({ ...f.input, text: 'status' });
+  assert.match(reply, /錄影音訊警告/); assert(!reply.includes('/private/'));
+  assert.deepEqual(f.state.outbox, {});
+});
 
 test('local failures remain available on explicit status without automatic retries or private error details', async () => {
   const f = fixture();

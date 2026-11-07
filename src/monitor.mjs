@@ -95,7 +95,11 @@ export class Monitor {
     // Remove the indicator as soon as recording is no longer active.
     await job.page?.run('cameraOff').catch(() => {});
     const media = await recorder.stop();
-    if (media) job.lastRecording = media;
+    if (media) {
+      job.lastRecording = media;
+      job.audioWarning = media.audioSignal?.status === 'silent' ? 'The last recording contains digital silence; check incoming audio playback.'
+        : media.audioSignal?.status === 'quiet' ? 'The last recording has very low audio levels; check incoming audio playback.' : null;
+    }
   }
   async finish(job, state, detail = '') {
     const endedSession = job.joinedAt && job.sessionId ? { sessionId: job.sessionId, url: job.url } : null;
@@ -230,6 +234,16 @@ export class Monitor {
         job.aloneSince ??= now;
         if (now - job.aloneSince >= 30000) { await this.finish(job, 'empty', 'No other attendees'); return; }
       } else job.aloneSince = null;
+      if (!job.audioCheckedAt || now - job.audioCheckedAt >= 10000) {
+        // This also repairs a retained tab from a Chrome launched before the
+        // autoplay flag was added. A playback problem must not leave the call.
+        try {
+          job.audioPlayback = await job.page.run('resumeAudio');
+          job.audioPlaybackWarning = job.audioPlayback?.errors?.length || job.audioPlayback?.paused > 0
+            ? 'Incoming audio playback is blocked or paused.' : null;
+        } catch { job.audioPlaybackWarning = 'Could not check incoming audio playback.'; }
+        job.audioCheckedAt = now;
+      }
       if (job.paused) {
         await this.stopRecording(job);
         await job.page.run('cameraOff');
