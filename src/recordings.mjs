@@ -33,6 +33,7 @@ export class Recordings {
       status: metadata.status, error: metadata.error ?? null, bytes: available ? stat.size : 0,
       duration: metadata.media?.duration ?? null, video: metadata.media?.video ?? null, audio: metadata.media?.audio ?? null,
       frames: metadata.media?.frames ?? null, audioFrames: metadata.media?.audioFrames ?? null,
+      audioSignal: metadata.media?.audioSignal ?? null, warnings: metadata.media?.warnings ?? [],
       downloadUrl: available && metadata.status === 'verified' ? `http://127.0.0.1:${this.config.healthPort}/v1/recordings/${encodeURIComponent(id)}/file` : null,
     };
   }
