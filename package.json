@@ -21,6 +21,7 @@
     "test:live": "node scripts/test-mcp-live.mjs",
     "transcript:setup": "node scripts/transcript-setup.mjs",
     "test:transcript": "python3 -m unittest discover -s test -p 'transcribe_test.py' && node --test test/transcripts.test.mjs",
+    "test:transcript:mps": ".meeting-mate/transcript-mps-venv/bin/python -m unittest discover -s test -p 'whisper_mps_decode_test.py'",
     "test:transcript:live": "node scripts/test-transcript-live.mjs",
     "verify:meeting": "node scripts/verify-meeting.mjs",
     "test:meeting-validation": "node --test test/meeting-validation.test.mjs",

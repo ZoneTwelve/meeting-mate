@@ -21,7 +21,8 @@ export const RELEASE_FILES = Object.freeze([
   'scripts/package-release.mjs', 'scripts/prepare-camera.mjs', 'scripts/repo-watch.mjs',
   'scripts/smoke.mjs', 'scripts/test-mcp-live.mjs', 'scripts/test-transcript-live.mjs',
   'scripts/slack-bind.mjs', 'scripts/meet-rehearsal.mjs', 'scripts/verify-meeting.mjs', 'docs/slack-binding.md',
-  'scripts/transcribe.py', 'scripts/transcript-setup.mjs', 'scripts/upgrade-when-idle.mjs',
+  'scripts/transcribe.py', 'scripts/whisper_mps_decode.py', 'scripts/profile-transcript.py',
+  'scripts/transcript-setup.mjs', 'scripts/upgrade-when-idle.mjs',
   'docs/api.md', 'docs/mcp.md', 'docs/releases.md', 'docs/repository.md', 'docs/requirements.md', 'docs/test-plan.md', 'docs/transcript.md',
 ]);
 const NATIVE_FILES = ['Contents/Info.plist', 'Contents/MacOS/meeting-mate-recorder', 'Contents/_CodeSignature/CodeResources'];

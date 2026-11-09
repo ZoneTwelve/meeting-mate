@@ -82,10 +82,72 @@ attention；輸出的 `engine.attention` 與 `torchVersion` 記錄實際路徑�
 | MPS FP16 / small | 19.64 | 6.95 | 28.02 |
 | MPS FP16 / large-v3-turbo | 60.18 | 6.27 | 68.78 |
 
-這個測例的 MPS 沒有超過既有 CPU small，所以保留 CPU 預設。
+上表為解碼最佳化前的測量，當時 MPS 沒有超過既有 CPU small；新的 profiling 與最佳化結果見下節。
 turbo 與 small 是不同模型，不應將兩者耗時當成同模型的 GPU 加速比。
 三次結果都有文字、speaker labels 及合法時間戳；缺少人工參考稿，這不是辨識準確率驗收。
 模型、錄音、輸出 JSON/TXT 與測試記錄均留在忽略的本機目錄。
+
+#### Profiling 與 MPS 解碼最佳化
+
+同日以同一段 60 秒音訊進行分階段 profiling。每個 backend 在獨立程序載入模型，
+先跑一次，再連跑兩次取中位數；下面的 ASR 包含逐字對齊，排除載入、音訊解碼及 speaker 分群：
+
+| 模型 small / beam size 5 | 首次 ASR 秒數 | 後兩次 ASR 中位數 |
+| --- | ---: | ---: |
+| CPU / faster-whisper int8 | 15.48 | 16.00 |
+| MPS / 原版 Whisper FP16 解碼 | 20.21 | 20.22 |
+| MPS / 批次讀取與 KV 重排 | 16.84 | 12.14 |
+
+MPS 暖機後 ASR 耗時下降約 40%，在此測例比 CPU 少約 24%。這是單一短音訊、
+兩次暖機後重跑的結果，尚未驗證長會議或 large-v3-turbo 的速度提升。
+CPU 與 MPS 使用不同推論引擎、精度及語音切段：CPU 的 VAD 將 60 秒音訊縮至 52.43 秒；
+這張表比較本專案的兩條流程，不能解讀為只替換硬體的效能測試，也不能代表辨識準確率。
+最佳化後另外啟動一次完整 MPS small worker，總耗時 32.30 秒，其中 ASR 含載入 18.60 秒、
+speaker 分群 12.13 秒；這次並未快過先前完整 CPU 的 24.33 秒。分群耗時也在各次測量間變動，
+所以尚不能宣稱完整工作的加速，CPU 預設繼續保留。
+
+量測指出主要可改善之處是逐 token 的 host/device 同步與快取索引：
+
+| 分段同步計時（含 host 工作） | 原版秒數 | 最佳化秒數 |
+| --- | ---: | ---: |
+| Beam search 自身，不含 KV 重排 | 5.65 | 0.76 |
+| KV cache 重排 | 2.85 | 0.33 |
+| 神經網路 decoder | 7.23 | 6.55 |
+| Timestamp 規則 | 1.94 | 1.89 |
+
+cProfile 的 Tensor `.item()` 呼叫從 17,626 次降至 46 次。原版 beam search 逐一讀回候選 token
+與分數，最佳化改成三次批次讀取；每輪只建立一個 device index tensor，重用於各層的 KV cache。
+保留 beam size、float32 分數加法、候選排序、重複候選覆寫、EOS、patience 與原版逐字對齊。
+MPS 最佳化前後，各次一般計時與 instrumented 計時的文字及逐字時間戳 SHA-256 完全一致。
+這只證明此音訊上的等價性；另有 CPU/MPS 的候選同分、重複序列、多音訊、EOS/patience、
+cache 重複索引及 context 復原測試，並通過 turbo 雙人合成語音、跨檔 offset、暫停及靜音驗證。
+
+`scripts/whisper_mps_decode.py` 在單一 worker 的 inference context 內替換兩個解碼方法，
+結束或發生例外時復原，不修改已安裝的套件。限定已驗證的 `openai-whisper==20250625`，
+輸出以 `engine.mpsDecoding: "bulk-v1"` 記錄路徑。CPU 預設保留；明確選擇 MPS 的新工作使用最佳化。
+Speaker 分群仍在 CPU，各次量測約 7–12 秒；ASR 加速比例不等於整個工作或分群的加速比例。
+
+重跑 profiling 時使用最長 120 秒的本機摘錄 manifest，每個輸出目錄必須是新的：
+
+```sh
+.meeting-mate/transcript-venv/bin/python scripts/profile-transcript.py \
+  --manifest /absolute/path/excerpt-input.json --models .meeting-mate/models \
+  --backend cpu --output-dir .meeting-mate/profile-cpu
+
+.meeting-mate/transcript-mps-venv/bin/python scripts/profile-transcript.py \
+  --manifest /absolute/path/excerpt-input.json --models .meeting-mate/models \
+  --backend mps --model small --mps-decoding bulk --output-dir .meeting-mate/profile-mps
+
+# 原版比較：將 bulk 改成 upstream，並指定另一個新的輸出目錄。
+# 可選 --trace：產出 PyTorch host trace，資料量可達數百 MB，匯出也需要時間。
+pnpm run test:transcript:mps
+```
+
+Profiler 另外產出 cProfile 和每階段的同步 wall time；分段插入的 synchronize 會干擾排程，
+上表的加速比只採用沒有這些插入的 ASR 重跑。此 PyTorch build 僅支援 CPU profiler activity，
+host trace 中的時間包含等待 GPU，不能當作 GPU kernel 時間或利用率。測試機未安裝 xctrace，
+未取得 Instruments 原生 GPU trace。報告只記錄文字 hash／數量，不存逐字稿，但 trace 與 pstats
+可能包含本機程式路徑，所有報告都應留在忽略的本機目錄。
 
 另外以 33.33 秒 Samantha / Daniel 合成語音驗證 MPS turbo：輸出 2 個 speaker、4 個段落，
 跨兩個來源保留相同標籤與 15 秒暫停，3 秒靜音輸出空稿；總耗時 38.47 秒。

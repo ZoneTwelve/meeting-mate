@@ -452,12 +452,13 @@ def recognize(audio, models, language, turns):
 
 def recognize_mps(audio, models, language, turns, model="small"):
     import torch
+    from whisper_mps_decode import optimized_decoding
     engine = load_mps_model(models, model)
     detected = None if language == "auto" else language
     words, duration = [], len(audio) / RATE
     index = SpeakerTurns(turns)
     try:
-        with torch.inference_mode(), mps_compatibility(use_sdpa=model == "small"):
+        with torch.inference_mode(), mps_compatibility(use_sdpa=model == "small"), optimized_decoding():
             for start in range(0, math.ceil(duration), 300):
                 end = min(duration, start + 300)
                 if not index.near(start, end, tolerance=0):
@@ -568,7 +569,7 @@ def transcribe(manifest, output, models, backend="cpu", model="small"):
                     "asr": "openai-whisper" if backend == "mps" else "faster-whisper",
                     "asrVersion": importlib.metadata.version("openai-whisper" if backend == "mps" else "faster-whisper"),
                     **({"torchVersion": importlib.metadata.version("torch"), "attention": "sdpa" if model == "small" else "eager",
-                        "mpsFallback": False} if backend == "mps" else {}),
+                        "mpsFallback": False, "mpsDecoding": "bulk-v1"} if backend == "mps" else {}),
                     "model": model, "modelRevision": MPS_CHECKPOINTS[model] if backend == "mps" else WHISPER_REVISION,
                     "diarization": "sherpa-onnx", "diarizationVersion": importlib.metadata.version("sherpa-onnx"),
                     "segmentation": "pyannote-segmentation-3.0", "embedding": "3dspeaker-eres2net-base",

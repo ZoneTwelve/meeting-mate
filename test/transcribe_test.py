@@ -120,7 +120,8 @@ class MpsTest(unittest.TestCase):
                 {"start": 1.2, "end": 1.6, "word": "next"}]}]},
         ]
         torch = SimpleNamespace(inference_mode=nullcontext, mps=MagicMock())
-        with patch.dict(sys.modules, torch=torch), patch.object(TRANSCRIBE, "load_mps_model", return_value=engine), \
+        with patch.dict(sys.modules, torch=torch, whisper_mps_decode=SimpleNamespace(optimized_decoding=nullcontext)), \
+                patch.object(TRANSCRIBE, "load_mps_model", return_value=engine), \
                 patch.object(TRANSCRIBE, "mps_compatibility", lambda **kwargs: nullcontext()), patch.object(TRANSCRIBE, "progress"):
             words, language = TRANSCRIBE.recognize_mps(audio, Path("/models"), "auto",
                                                        [{"start": 0, "end": 600, "speaker": 0}])
