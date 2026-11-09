@@ -78,6 +78,13 @@ test('Whisper provenance, source timestamps and worker terminal state are requir
   f.job.state = 'running';
   assert.ok(evaluate(f).failures.includes('transcript_not_complete'));
 });
+test('local MPS Whisper is valid provenance without weakening offline verification', () => {
+  const f = fixture();
+  f.job.result.engine = { asr: 'openai-whisper', model: 'large-v3-turbo', device: 'mps', offline: true };
+  assert.equal(evaluate(f).passed, true);
+  f.job.result.engine.offline = false;
+  assert.ok(evaluate(f).failures.includes('whisper_provenance_missing'));
+});
 
 function secondSource(f) {
   const source = { id: 'synthetic-second.mp4', duration: 10, offsetSeconds: 20, bytes: 200, modifiedAt: 2 };

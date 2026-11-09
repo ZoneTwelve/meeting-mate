@@ -16,6 +16,17 @@ test('an explicitly empty meeting list enables manual-only operation', () => {
   assert.deepEqual(config.meetingUrls, []);
   assert.throws(() => normalizeConfig({}, { MEET_USERNAME: 'Yumi' }));
 });
+test('transcript backend selects explicit local MPS settings and rejects unsupported combinations', () => {
+  const raw = { meetingUrls: [] }, env = { MEET_USERNAME: 'Test' };
+  assert.equal(normalizeConfig(raw, env).transcriptBackend, 'cpu');
+  const gpu = normalizeConfig({ ...raw, transcriptBackend: 'mps', transcriptModel: 'large-v3-turbo' }, env);
+  assert.equal(gpu.transcriptModel, 'large-v3-turbo');
+  assert.ok(gpu.transcriptMpsPython.endsWith('/transcript-mps-venv/bin/python'));
+  assert.equal(normalizeConfig(raw, { ...env, MEETING_MATE_TRANSCRIPT_BACKEND: 'mps' }).transcriptBackend, 'mps');
+  for (const extra of [{ transcriptBackend: 'cuda' }, { transcriptModel: 'large-v3-turbo' }, { transcriptBackend: 'mps', transcriptModel: '../model' }]) {
+    assert.throws(() => normalizeConfig({ ...raw, ...extra }, env), /transcriptBackend/);
+  }
+});
 test('only genuine Google Meet URLs are accepted', () => {
   for (const value of ['http://meet.google.com/aaa-bbbb-ccc', 'https://meet.google.com.evil.test/aaa-bbbb-ccc', 'https://name:secret@meet.google.com/aaa-bbbb-ccc', 'https://meet.google.com/', `${url}/extra`, 'https://meet.google.com:9000/aaa-bbbb-ccc']) {
     assert.throws(() => meetUrl(value));

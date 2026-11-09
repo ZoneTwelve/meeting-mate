@@ -2,13 +2,17 @@
 """Model-free unit tests; --smoke additionally runs local synthetic inference."""
 
 import importlib.util
+import hashlib
 import json
+from contextlib import nullcontext
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 import wave
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +60,74 @@ class ManifestTest(unittest.TestCase):
                            [dict(first, duration=30000), dict(first, id="second", duration=30000, offsetSeconds=30000)]]:
             with self.subTest(recordings=recordings), self.assertRaises(TRANSCRIBE.TranscriptError):
                 TRANSCRIBE.validate_manifest(manifest(recordings=recordings))
+
+
+class MpsTest(unittest.TestCase):
+    def test_selected_mps_checkpoint_is_checked_without_requiring_cpu_weights(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            models = Path(temporary)
+            for name in [TRANSCRIBE.SEGMENTATION, TRANSCRIBE.EMBEDDING, "whisper-mps/small.pt"]:
+                path = models / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fixture")
+            with self.assertRaisesRegex(TRANSCRIBE.TranscriptError, "integrity"):
+                TRANSCRIBE.ensure_models(models, "mps", "small")
+            with patch.dict(TRANSCRIBE.MPS_CHECKPOINTS, small=hashlib.sha256(b"fixture").hexdigest()):
+                TRANSCRIBE.ensure_models(models, "mps", "small")
+            with self.assertRaisesRegex(TRANSCRIBE.TranscriptError, "requires model=small"):
+                TRANSCRIBE.ensure_models(models, "cpu", "large-v3-turbo")
+
+    def test_unavailable_mps_fails_instead_of_running_cpu(self):
+        torch = SimpleNamespace(backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False)))
+        with patch.dict(sys.modules, torch=torch, whisper=SimpleNamespace()):
+            with self.assertRaisesRegex(TRANSCRIBE.TranscriptError, "no CPU fallback"):
+                TRANSCRIBE.require_mps()
+
+    def test_word_alignment_moves_matrix_to_cpu_before_upstream_float64_and_restores_on_error(self):
+        matrix = MagicMock()
+        original = MagicMock(return_value="alignment")
+        timing = SimpleNamespace(dtw=original)
+        attention = SimpleNamespace(use_sdpa=False)
+        with patch.dict(sys.modules, {"whisper": SimpleNamespace(timing=timing),
+                                      "whisper.model": SimpleNamespace(MultiHeadAttention=attention)}):
+            with self.assertRaisesRegex(RuntimeError, "cancelled"):
+                with TRANSCRIBE.mps_compatibility():
+                    self.assertTrue(attention.use_sdpa)
+                    self.assertEqual(timing.dtw(matrix), "alignment")
+                    original.assert_called_once_with(matrix.cpu.return_value)
+                    raise RuntimeError("cancelled")
+            self.assertIs(timing.dtw, original)
+            self.assertFalse(attention.use_sdpa)
+
+    def test_old_mps_sdpa_version_is_rejected_before_inference(self):
+        torch = SimpleNamespace(__version__="2.9.1", backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)))
+        with patch.dict(sys.modules, torch=torch, whisper=SimpleNamespace()):
+            with self.assertRaisesRegex(TRANSCRIBE.TranscriptError, "2.15"):
+                TRANSCRIBE.require_mps()
+
+    def test_mps_word_timestamps_keep_window_ownership_and_global_offsets(self):
+        audio = MagicMock()
+        audio.__len__.return_value = 600 * TRANSCRIBE.RATE
+        engine = MagicMock()
+        # The first window sees padded audio beyond 300 s. The second starts at
+        # 299 s, so its timestamps need an offset and must not repeat owned words.
+        engine.transcribe.side_effect = [
+            {"language": "zh", "segments": [{"words": [
+                {"start": 299, "end": 299.4, "word": "first"},
+                {"start": 300.2, "end": 300.6, "word": "next"}]}]},
+            {"language": "zh", "segments": [{"words": [
+                {"start": 0, "end": 0.4, "word": "first"},
+                {"start": 1.2, "end": 1.6, "word": "next"}]}]},
+        ]
+        torch = SimpleNamespace(inference_mode=nullcontext, mps=MagicMock())
+        with patch.dict(sys.modules, torch=torch), patch.object(TRANSCRIBE, "load_mps_model", return_value=engine), \
+                patch.object(TRANSCRIBE, "mps_compatibility", lambda **kwargs: nullcontext()), patch.object(TRANSCRIBE, "progress"):
+            words, language = TRANSCRIBE.recognize_mps(audio, Path("/models"), "auto",
+                                                       [{"start": 0, "end": 600, "speaker": 0}])
+        self.assertEqual(language, "zh")
+        self.assertEqual([word["text"] for word in words], ["first", "next"])
+        self.assertAlmostEqual(words[1]["start"], 300.2)
+        self.assertEqual(engine.transcribe.call_args.kwargs["language"], "zh")
 
 
 class TimelineTest(unittest.TestCase):
@@ -216,9 +288,9 @@ class SpeakerTest(unittest.TestCase):
         self.assertEqual([item["start"] for item in segments], [5, 8])
 
 
-def smoke():
+def smoke(backend="cpu", model="small"):
     """Only synthetic speech produced by local macOS voices, never real meetings."""
-    python = ROOT / ".meeting-mate/transcript-venv/bin/python"
+    python = ROOT / f".meeting-mate/{'transcript-mps-venv' if backend == 'mps' else 'transcript-venv'}/bin/python"
     models = ROOT / ".meeting-mate/models"
     if not python.is_file():
         raise RuntimeError("Run pnpm run transcript:setup before the synthetic smoke test")
@@ -254,7 +326,8 @@ def smoke():
     TRANSCRIBE.atomic_json(input_path, {"jobId": "synthetic-two-voices", "language": "auto", "numSpeakers": None, "recordings": recordings})
     started = time.monotonic()
     completed = subprocess.run([str(python), str(ROOT / "scripts/transcribe.py"), "--manifest", str(input_path),
-                                "--output", str(output_path), "--models", str(models)], capture_output=True, text=True, timeout=1800)
+                                "--output", str(output_path), "--models", str(models), "--backend", backend,
+                                "--model", model], capture_output=True, text=True, timeout=1800)
     # Validate that stdout contains only the documented progress protocol.
     events = [json.loads(line) for line in completed.stdout.splitlines()]
     assert all(isinstance(event.get("phase"), str) for event in events), completed.stdout
@@ -269,11 +342,13 @@ def verify_smoke(directory, process_elapsed=None):
     directory = Path(directory).resolve()
     if not directory.is_relative_to((ROOT / ".meeting-mate/transcript-smoke").resolve()):
         raise RuntimeError("Only this project's synthetic fixture directory may be verified")
-    python = ROOT / ".meeting-mate/transcript-venv/bin/python"
     models = ROOT / ".meeting-mate/models"
     output_path = directory / "output.json"
     recordings = json.loads((directory / "input.json").read_text())["recordings"]
     output = json.loads(output_path.read_text())
+    backend = output["engine"].get("device", "cpu")
+    model = output["engine"].get("model", "small")
+    python = ROOT / f".meeting-mate/{'transcript-mps-venv' if backend == 'mps' else 'transcript-venv'}/bin/python"
     assert output["segments"], "No text produced for synthetic speech"
     assert len(output["speakers"]) == 2, "Expected two distinct synthetic voices"
     by_recording = {item["id"]: set() for item in recordings}
@@ -294,13 +369,14 @@ def verify_smoke(directory, process_elapsed=None):
     TRANSCRIBE.atomic_json(silent_input, {"jobId": "synthetic-silence", "language": "auto", "numSpeakers": None,
         "recordings": [{"id": "silence.wav", "file": str(silence), "duration": 3, "offsetSeconds": 0}]})
     subprocess.run([str(python), str(ROOT / "scripts/transcribe.py"), "--manifest", str(silent_input),
-                    "--output", str(silent_output), "--models", str(models)], check=True, timeout=60, stdout=subprocess.DEVNULL)
+                    "--output", str(silent_output), "--models", str(models), "--backend", backend, "--model", model],
+                   check=True, timeout=60, stdout=subprocess.DEVNULL)
     empty = json.loads(silent_output.read_text())
     assert empty["speakers"] == [] and empty["segments"] == [], "Silence must not produce invented speech"
     report = {"ok": True, "fixtureDirectory": str(directory), "recordedSeconds": sum(item["duration"] for item in recordings),
               "wallClockSeconds": output["duration"], "elapsedSeconds": output["engine"]["elapsedSeconds"],
               "processElapsedSeconds": round(process_elapsed, 3) if process_elapsed is not None else None,
-              "speakers": len(output["speakers"]),
+              "speakers": len(output["speakers"]), "backend": backend, "model": model,
               "segments": len(output["segments"]), "silenceEmpty": True, "language": output["language"],
               "output": str(output_path), "warnings": output["warnings"],
               "limitations": "Synthetic voices only; not a real-meeting accuracy benchmark."}
@@ -368,6 +444,8 @@ def compare_embeddings(input_path):
 if __name__ == "__main__":
     if sys.argv[1:] == ["--smoke"]:
         smoke()
+    elif sys.argv[1:] == ["--smoke-mps"]:
+        smoke(backend="mps", model="large-v3-turbo")
     elif len(sys.argv) == 3 and sys.argv[1] == "--verify-smoke":
         verify_smoke(sys.argv[2])
     elif len(sys.argv) == 3 and sys.argv[1] == "--compare-embeddings":

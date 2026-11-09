@@ -10,7 +10,7 @@ const idPattern = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i;
 const problem = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 const clone = (value) => structuredClone(value);
 const limitValue = (limit) => { if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw problem('limit must be an integer from 1 to 100'); return limit; };
-const ENGINE_VERSION = 'local-whisper-sherpa-v2';
+const ENGINE_VERSION = 'local-whisper-sherpa-v3';
 
 export class Transcripts {
   constructor(config, catalog, { isBusy = () => false, isSessionActive = () => false, onChange = () => {}, spawnProcess = spawn,
@@ -115,7 +115,8 @@ export class Transcripts {
           offsetSeconds: (Date.parse(item.startedAt) - origin) / 1000, bytes: stat.size, modifiedAt: stat.mtimeMs };
       } finally { await handle.close(); }
     }));
-    const fingerprint = createHash('sha256').update(JSON.stringify({ engine: ENGINE_VERSION, recordings, language, numSpeakers })).digest('hex');
+    const backend = this.config.transcriptBackend ?? 'cpu', model = this.config.transcriptModel ?? 'small';
+    const fingerprint = createHash('sha256').update(JSON.stringify({ engine: ENGINE_VERSION, backend, model, recordings, language, numSpeakers })).digest('hex');
     const existing = this.jobs.find((job) => job.fingerprint === fingerprint && job.state !== 'failed');
     if (existing) {
       if (existing.state !== 'completed') return this.metadata(existing);
@@ -125,7 +126,7 @@ export class Transcripts {
     if (this.jobs.filter((job) => job.state === 'queued').length >= 20) throw problem('Transcript queue is full', 409);
     const job = { id: randomUUID(), fingerprint, sessionId: selected.sessionId, meetingUrl: selected.meetingUrl,
       state: 'queued', phase: 'queued', createdAt: new Date().toISOString(), startedAt: null, finishedAt: null,
-      language, numSpeakers, engineVersion: ENGINE_VERSION, recordings, error: null, logs: '', attempts: 0 };
+      language, numSpeakers, backend, model, engineVersion: ENGINE_VERSION, recordings, error: null, logs: '', attempts: 0 };
     this.save(job);
     this.jobs.unshift(job);
     this.changed();
@@ -153,7 +154,11 @@ export class Transcripts {
   }
   async launch(active) {
     const { job } = active;
-    await access(this.config.transcriptPython).catch(() => { throw new Error('Local transcript environment is missing; run pnpm run transcript:setup'); });
+    // Persist the chosen backend in each job so a configuration change cannot
+    // silently alter a queued job or reuse another model's completed output.
+    const backend = job.backend ?? 'cpu', model = job.model ?? 'small';
+    const python = backend === 'mps' ? this.config.transcriptMpsPython : this.config.transcriptPython;
+    await access(python).catch(() => { throw new Error(`Local transcript environment is missing; run pnpm run transcript:setup -- --backend ${backend} --model ${model}`); });
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     const disk = await statfs(this.directory);
     const extractedBytes = job.recordings.reduce((sum, recording) => sum + recording.duration * 16000 * 4, 0);
@@ -171,10 +176,10 @@ export class Transcripts {
     writeFileSync(files.input, JSON.stringify({ jobId: job.id, language: job.language, numSpeakers: job.numSpeakers, recordings: job.recordings }), { mode: 0o600 });
     Object.assign(job, { state: 'running', phase: 'starting', startedAt: new Date().toISOString(), attempts: job.attempts + 1 });
     this.save(job);
-    const child = active.child = this.spawnProcess(this.config.transcriptPython, [path.join(this.rootDir, 'scripts/transcribe.py'),
-      '--manifest', files.input, '--output', files.output, '--models', this.config.transcriptModels], {
+    const child = active.child = this.spawnProcess(python, [path.join(this.rootDir, 'scripts/transcribe.py'),
+      '--manifest', files.input, '--output', files.output, '--models', this.config.transcriptModels, '--backend', backend, '--model', model], {
       cwd: this.rootDir, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, HF_HUB_OFFLINE: '1', HF_HUB_DISABLE_TELEMETRY: '1', DO_NOT_TRACK: '1', OMP_NUM_THREADS: '2', PYTHONUNBUFFERED: '1' },
+      env: { ...process.env, HF_HUB_OFFLINE: '1', HF_HUB_DISABLE_TELEMETRY: '1', DO_NOT_TRACK: '1', PYTHONUNBUFFERED: '1' },
     });
     let pending = '';
     child.stdout.on('data', (chunk) => {

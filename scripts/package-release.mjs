@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 // Deliberate, reviewed allowlist. Never glob the checkout or package runtime data.
 export const RELEASE_FILES = Object.freeze([
   'package.json', 'pnpm-lock.yaml', '.env.example', '.gitignore', 'config.example.json', 'README.md', 'AGENTS.md', 'Todo.md',
-  'requirements-transcript.txt', 'bin/meeting-mate.mjs', 'native/Recorder.swift',
+  'requirements-transcript.txt', 'requirements-transcript-mps.txt', 'bin/meeting-mate.mjs', 'native/Recorder.swift',
+  'skills/transcript-convert/SKILL.md', 'skills/transcript-convert/scripts/format_transcript.py',
   'src/api-client.mjs', 'src/browser.mjs', 'src/cdp.mjs', 'src/config.mjs',
   'src/control-server.mjs', 'src/diagnostics.mjs', 'src/idle.mjs', 'src/index.mjs',
   'src/mcp.mjs', 'src/meet-page.mjs', 'src/meeting-validation.mjs', 'src/monitor.mjs', 'src/openapi.mjs',

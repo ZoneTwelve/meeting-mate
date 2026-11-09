@@ -16,5 +16,7 @@
   "maxSessionSeconds": 43200,
   "transcriptEnabled": true,
   "transcriptLanguage": "auto",
+  "transcriptBackend": "cpu",
+  "transcriptModel": "small",
   "transcriptsDir": "./transcripts"
 }

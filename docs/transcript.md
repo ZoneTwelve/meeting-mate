@@ -21,16 +21,85 @@ node scripts/transcript-setup.mjs --check
 - `.meeting-mate/models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx`：說話人 embedding。
 - `.meeting-mate/models/transcript-models.json`：安裝完成資訊與實際 SHA-256。
 
-預設使用最多 4 個 CPU threads（上限 8），可用環境變數調整：
+預設使用 4 個 CPU threads（上限 8），可在啟動服務前用環境變數調整：
 
 ```bash
-MEETING_MATE_TRANSCRIPT_THREADS=8 pnpm run test:transcript:live -- <recording-id.mp4>
+MEETING_MATE_TRANSCRIPT_THREADS=8 pnpm start
 ```
 
-這只調整本機 ASR 與 speaker diarization 的 CPU 平行度；目前 macOS 的
-`faster-whisper`/CTranslate2 仍不使用 Apple MPS，不能把 `mps` 當成 device 值。
+這調整 CPU 推論平行度，不保證增加 threads 就比較快。也可用於下方的直接 worker 命令。
 
-模型使用官方公開下載位置，不需要 Hugging Face token、雲端語音服務或接受 gated 模型條款。只在安裝階段連網下載套件及模型；推論設定 `HF_HUB_OFFLINE=1`、`HF_HUB_DISABLE_TELEMETRY=1`、`TRANSFORMERS_OFFLINE=1`、`DO_NOT_TRACK=1`，並使用 `local_files_only=True` 與本機模型路徑。Python audit hook 也會拒絕一般 Python 網路連線／DNS；這是額外防護，不是作業系統網路 sandbox。音訊不會上傳。
+### Apple GPU（PyTorch MPS）
+
+MPS 使用獨立的 OpenAI Whisper / PyTorch 環境；CTranslate2 本身沒有 MPS device。
+安裝需要 6 GiB 可用空間，不會替換原本的 CPU 環境：
+
+```sh
+pnpm run transcript:setup -- --backend mps --model large-v3-turbo
+node scripts/transcript-setup.mjs --backend mps --model large-v3-turbo --check
+```
+
+也支援 `--model small`，可用相同大小的多語言模型比較 CPU 與 MPS。
+套件固定於 `requirements-transcript-mps.txt`；模型存於 `.meeting-mate/models/whisper-mps/`。
+small checkpoint 約 484 MB，large-v3-turbo 約 1.62 GB，從 OpenAI 的公開位置下載，
+安裝與 MPS worker 都驗證固定 SHA-256。模型權重及推論產物都留在本機。
+
+要讓 API／自動排隊的新工作使用 MPS，在本機 `config.json` 設定
+`"transcriptBackend": "mps"` 和 `"transcriptModel": "large-v3-turbo"`，於會議結束、服務閒置時重啟。
+也可於啟動時設定 `MEETING_MATE_TRANSCRIPT_BACKEND=mps` 及 `MEETING_MATE_TRANSCRIPT_MODEL=large-v3-turbo`；
+明確的 config 值優先。未設定時保留 `cpu` / `small`。
+已排隊工作會記住建立時的 backend/model；更換模型不會重用舊模型的已完成結果。
+
+直接轉錄不用重啟服務：
+
+```sh
+.meeting-mate/transcript-mps-venv/bin/python scripts/transcribe.py \
+  --manifest /absolute/path/input.json \
+  --output /absolute/path/output.json \
+  --models /absolute/path/.meeting-mate/models \
+  --backend mps --model large-v3-turbo
+```
+
+Whisper 的神經網路在 MPS 執行；sherpa-onnx 說話人分群仍使用 CPU。
+逐字對齊的 sparse head 索引留在 CPU，DTW 小矩陣先搬回 CPU 再轉 float64，
+避免 MPS 不支援的運算。這兩個相容性處理位於 worker，沒有改寫 site-packages。
+`PYTORCH_ENABLE_MPS_FALLBACK=0` 禁止算子偷偷回退；MPS 不可用時明確失敗。
+MPS 保留詞級時間戳、跨檔 offset、Speaker N 與 Unknown speaker 的處理規則。
+它不會改善分群模型本身的人數估計，GPU 也不保證對所有音訊都較快。
+
+MPS 環境固定 PyTorch 2.15.0；worker 會拒絕低於 2.15 的版本。開發中實測
+2.9.1 的 SDPA 會在中文語音產生大量重複標點，不能只以成功 exit 判定可用。
+權重預先轉 FP16、LayerNorm 保留 FP32，矩陣運算預設使用
+`PYTORCH_MPS_PREFER_METAL=1`。依目前 M4 測試，small 選 SDPA、turbo 選 explicit
+attention；輸出的 `engine.attention` 與 `torchVersion` 記錄實際路徑。
+
+2026-11-09，M4 / 32 GiB，同一段 60 秒中文語音、beam size 5、4 CPU threads
+及自動 speaker 分群的單次測量如下。耗時包含模型載入，尚非長會議或統計基準：
+
+| Backend / 模型 | ASR 秒數 | 分群秒數（CPU） | 總秒數 |
+| --- | ---: | ---: | ---: |
+| CPU int8 / small | 16.22 | 7.96 | 24.33 |
+| MPS FP16 / small | 19.64 | 6.95 | 28.02 |
+| MPS FP16 / large-v3-turbo | 60.18 | 6.27 | 68.78 |
+
+這個測例的 MPS 沒有超過既有 CPU small，所以保留 CPU 預設。
+turbo 與 small 是不同模型，不應將兩者耗時當成同模型的 GPU 加速比。
+三次結果都有文字、speaker labels 及合法時間戳；缺少人工參考稿，這不是辨識準確率驗收。
+模型、錄音、輸出 JSON/TXT 與測試記錄均留在忽略的本機目錄。
+
+另外以 33.33 秒 Samantha / Daniel 合成語音驗證 MPS turbo：輸出 2 個 speaker、4 個段落，
+跨兩個來源保留相同標籤與 15 秒暫停，3 秒靜音輸出空稿；總耗時 38.47 秒。
+這是合成語音驗證，不代表真實多人會議的分群準確率。重跑命令：
+
+```sh
+.meeting-mate/transcript-mps-venv/bin/python test/transcribe_test.py --smoke-mps
+```
+
+相容性處理依據 [Whisper 原始碼](https://github.com/openai/whisper/blob/v20250625/whisper/timing.py)、
+[PyTorch MPS 文件](https://docs.pytorch.org/docs/2.15/notes/mps.html) 與
+[MPS 環境變數](https://docs.pytorch.org/docs/2.15/mps_environment_variables.html)，並以上述本機實測確認。
+
+模型使用官方公開下載位置，不需要 Hugging Face token、雲端語音服務或接受 gated 模型條款。只在安裝階段連網下載套件及模型；推論設定 `HF_HUB_OFFLINE=1`、`HF_HUB_DISABLE_TELEMETRY=1`、`TRANSFORMERS_OFFLINE=1`、`DO_NOT_TRACK=1`，CPU backend 使用 `local_files_only=True`，兩個 backend 都只傳入本機模型路徑。Python audit hook 也會拒絕一般 Python 網路連線／DNS；這是額外防護，不是作業系統網路 sandbox。音訊不會上傳。
 
 ## Worker 介面
 
@@ -89,7 +158,7 @@ MEETING_MATE_TRANSCRIPT_THREADS=8 pnpm run test:transcript:live -- <recording-id
 }
 ```
 
-`duration`、`start`、`end` 單位為秒，包含原始分段／暫停間隔。`engine` 另外包含實際套件版本、模型 revision、`pipelineVersion: 2` 與處理耗時。無可靠講者匹配的已辨識文字仍保留，`speakerId` 為 `null`，匯出器顯示 `Unknown speaker`，不額外發明一位 speaker。空白音訊輸出空的 `speakers`／`segments` 並成功完成；未識別到語言時為 `und`。不會以假的逐字稿填補空白。錯誤時不發布半成品 JSON；成功輸出採同目錄原子 rename，UTF-8、檔案模式 `0600`。
+`duration`、`start`、`end` 單位為秒，包含原始分段／暫停間隔。`engine` 另外包含實際套件版本、模型 revision、`pipelineVersion: 3` 與處理耗時。MPS 的 `asr` 為 `openai-whisper`，`device` 為 `mps`，`diarizationDevice` 為 `cpu`。`asrSeconds` 包含模型載入與辨識，`diarizationSeconds` 包含分群；`elapsedSeconds` 包含整個 worker 流程。無可靠講者匹配的已辨識文字仍保留，`speakerId` 為 `null`，匯出器顯示 `Unknown speaker`，不額外發明一位 speaker。空白音訊輸出空的 `speakers`／`segments` 並成功完成；未識別到語言時為 `und`。不會以假的逐字稿填補空白。錯誤時不發布半成品 JSON；成功輸出採同目錄原子 rename，UTF-8、檔案模式 `0600`。
 
 stdout 僅輸出逐行 JSON 進度，例如 `{"phase":"diarizing","progress":50}`。phase 依序為 `validating`、`extracting`、`diarizing`、`transcribing`、`exporting`、`completed`；`progress` 是各 phase 的 0–100 百分比。診斷與錯誤只到 stderr，不把逐字稿內容寫入進度 log。成功 exit 0；輸入／模型／推論錯誤 exit 1；取消 exit 130。SIGTERM／SIGINT 會中止子程序、清除暫存音訊；強制 SIGKILL／斷電無法保證清理，呼叫端應回收所屬 job 的暫存目錄。
 

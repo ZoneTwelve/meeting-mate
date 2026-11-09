@@ -28,6 +28,10 @@ export function normalizeConfig(raw, env = process.env, base = root) {
   };
   const transcriptLanguage = raw.transcriptLanguage ?? 'auto';
   if (typeof transcriptLanguage !== 'string' || !/^(auto|[a-z]{2,3})$/.test(transcriptLanguage)) throw new Error('transcriptLanguage must be auto or a language code');
+  const transcriptBackend = raw.transcriptBackend ?? env.MEETING_MATE_TRANSCRIPT_BACKEND ?? 'cpu';
+  const transcriptModel = raw.transcriptModel ?? env.MEETING_MATE_TRANSCRIPT_MODEL ?? 'small';
+  if (!['cpu', 'mps'].includes(transcriptBackend) || !['small', 'large-v3-turbo'].includes(transcriptModel) ||
+      (transcriptBackend === 'cpu' && transcriptModel !== 'small')) throw new Error('Choose transcriptBackend/transcriptModel cpu/small, mps/small, or mps/large-v3-turbo');
   return {
     username, meetingUrls: [...new Set(urls.map(meetUrl))],
     profileDir: absolute(raw.profileDir ?? '.meeting-mate/chrome-profile'),
@@ -46,9 +50,10 @@ export function normalizeConfig(raw, env = process.env, base = root) {
     recorderApp: absolute('.meeting-mate/Meeting Mate Recorder.app'),
     recorderPath: absolute('.meeting-mate/Meeting Mate Recorder.app/Contents/MacOS/meeting-mate-recorder'),
     transcriptEnabled: raw.transcriptEnabled !== false,
-    transcriptLanguage,
+    transcriptLanguage, transcriptBackend, transcriptModel,
     transcriptsDir: absolute(raw.transcriptsDir ?? 'transcripts'),
     transcriptPython: absolute('.meeting-mate/transcript-venv/bin/python'),
+    transcriptMpsPython: absolute('.meeting-mate/transcript-mps-venv/bin/python'),
     transcriptModels: absolute('.meeting-mate/models'),
   };
 }

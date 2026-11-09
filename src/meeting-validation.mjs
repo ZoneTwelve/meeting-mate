@@ -67,7 +67,7 @@ export function evaluateMeetingValidation(input, { health, job, inspections = []
   if (job?.state !== 'completed' || job.sessionId !== manifest.sessionId || !Array.isArray(job.recordings) || !job.recordings.length) fail('transcript_not_complete');
   if (!Number.isFinite(Date.parse(job?.createdAt)) || Date.parse(job.createdAt) < Date.parse(manifest.startedAt)) fail('stale_transcript');
   const engine = job?.result?.engine;
-  if (!['faster-whisper', 'openai-whisper-cli'].includes(engine?.asr) || !['small', 'large-v3-turbo'].includes(engine?.model) || engine?.offline !== true) {
+  if (!['faster-whisper', 'openai-whisper', 'openai-whisper-cli'].includes(engine?.asr) || !['small', 'large-v3-turbo'].includes(engine?.model) || engine?.offline !== true) {
     fail('whisper_provenance_missing');
   }
   try { validateTranscript(job?.result, job); } catch { fail('invalid_transcript'); }

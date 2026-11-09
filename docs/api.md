@@ -68,7 +68,7 @@ pnpm run transcript:setup --check
 curl 'http://127.0.0.1:8787/v1/transcripts?limit=10'
 ```
 
-目前 setup 限 macOS arm64，使用本機 Python 3.12、faster-whisper small CPU int8、sherpa-onnx 分群。執行轉錄時只讀本機模型，設定離線模式並阻擋 Python 網路連線；缺模型會讓工作 failed，不默默下載或改送雲端。這不是 OS 級網路 sandbox。`/v1/diagnostics` 只涵蓋錄影環境，不驗證語音模型。
+目前 setup 限 macOS arm64，預設使用本機 Python 3.12、faster-whisper small CPU int8、sherpa-onnx 分群。也可[安裝與設定 PyTorch MPS](transcript.md#apple-gpupytorch-mps)，使用 OpenAI Whisper small 或 large-v3-turbo；說話人分群仍在 CPU。執行轉錄時只讀本機模型，設定離線模式並阻擋 Python 網路連線；缺模型會讓工作 failed，不默默下載或改送雲端。這不是 OS 級網路 sandbox。`/v1/diagnostics` 只涵蓋錄影環境，不驗證語音模型。
 
 選定一個 recording ID 時：有 `sessionId` 就納入同場全部已索引片段；沒有則只處理該舊檔。場次必須已結束，片段全部存在且 verified、時長有效，否則 409；不會偷偷跳過已知 failed 段。沒有可用錄影時不建立自動工作。自動排入失敗（例如佇列滿、片段驗證失敗）會記錄錯誤，不阻擋錄影器清理；目前沒有自動補投。
 

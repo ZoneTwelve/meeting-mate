@@ -4,7 +4,9 @@
 import argparse
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
+from contextlib import contextmanager
 import importlib.metadata
+import hashlib
 import json
 import math
 import os
@@ -28,16 +30,22 @@ for _key, _value in {
     "HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1",
     "TRANSFORMERS_OFFLINE": "1", "DO_NOT_TRACK": "1",
     "TOKENIZERS_PARALLELISM": "false",
+    "PYTORCH_ENABLE_MPS_FALLBACK": "0", "NUMBA_NUM_THREADS": str(THREADS),
     "OMP_NUM_THREADS": str(THREADS), "OPENBLAS_NUM_THREADS": str(THREADS),
     "MKL_NUM_THREADS": str(THREADS), "VECLIB_MAXIMUM_THREADS": str(THREADS),
 }.items():
     os.environ[_key] = _value
+os.environ.setdefault("PYTORCH_MPS_PREFER_METAL", "1")
 
 RATE = 16000
 MAX_AUDIO_SECONDS = 12 * 60 * 60
 MAX_MANIFEST_BYTES = 512 * 1024
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 WHISPER_REVISION = "536b0662742c02347bc0e980a01041f333bce120"
+MPS_CHECKPOINTS = {
+    "small": "9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794",
+    "large-v3-turbo": "aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a",
+}
 SEGMENTATION = "sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
 EMBEDDING = "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
 
@@ -287,12 +295,91 @@ def extract_audio(recordings, destination, warnings):
     return spans
 
 
-def ensure_models(models):
-    paths = [models / "faster-whisper-small" / name for name in
-             ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt")]
+def ensure_models(models, backend="cpu", model="small"):
+    if backend not in {"cpu", "mps"} or model not in MPS_CHECKPOINTS:
+        raise TranscriptError("Unsupported transcript backend or model")
+    if backend == "cpu" and model != "small":
+        raise TranscriptError("The CPU backend requires model=small")
+    paths = ([models / "faster-whisper-small" / name for name in
+              ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt")]
+             if backend == "cpu" else [models / "whisper-mps" / f"{model}.pt"])
     paths += [models / SEGMENTATION, models / EMBEDDING]
     if any(not path.is_file() or path.stat().st_size == 0 for path in paths):
-        raise TranscriptError("Local models are incomplete. Run pnpm run transcript:setup first; runtime never downloads models.")
+        setup = "" if backend == "cpu" else f" -- --backend mps --model {model}"
+        raise TranscriptError(f"Local models are incomplete. Run pnpm run transcript:setup{setup} first; runtime never downloads models.")
+    if backend == "mps":
+        with paths[0].open("rb") as checkpoint:
+            digest = hashlib.sha256()
+            for data in iter(lambda: checkpoint.read(1024 * 1024), b""):
+                digest.update(data)
+        if digest.hexdigest() != MPS_CHECKPOINTS[model]:
+            raise TranscriptError("MPS checkpoint integrity check failed; rerun transcript:setup for this model")
+
+
+def require_mps():
+    try:
+        import torch
+        import whisper
+    except ImportError as error:
+        raise TranscriptError("MPS dependencies are missing; use transcript-mps-venv after transcript:setup -- --backend mps") from error
+    if not torch.backends.mps.is_available():
+        raise TranscriptError("MPS is unavailable in this Python environment; no CPU fallback was applied")
+    version = re.match(r"(\d+)\.(\d+)", torch.__version__)
+    if not version or tuple(map(int, version.groups())) < (2, 15):
+        raise TranscriptError("MPS requires PyTorch 2.15 or newer; rerun transcript:setup -- --backend mps (2.9 SDPA corrupted decoded text)")
+    torch.set_num_threads(THREADS)
+    return torch, whisper
+
+
+def load_mps_model(models, model):
+    torch, whisper = require_mps()
+    # A local path never downloads. Restore the official alignment heads because
+    # Whisper only restores them automatically when loading by remote model name.
+    engine = whisper.load_model(str(models / "whisper-mps" / f"{model}.pt"), device="cpu")
+    engine.set_alignment_heads(whisper._ALIGNMENT_HEADS[model])
+    # MPS cannot store sparse tensors. This CPU boolean index selects attention
+    # heads; it is not a model weight. Keep it on CPU while moving all weights and
+    # dense buffers to MPS. Whisper's final dynamic time warping also uses CPU.
+    heads = engine.alignment_heads
+    del engine.alignment_heads
+    try:
+        # Preconvert dense weights once instead of recasting every Linear call
+        # during autoregressive decoding. Whisper LayerNorm computes in fp32.
+        engine.to(device="mps", dtype=torch.float16)
+        for module in engine.modules():
+            if isinstance(module, torch.nn.LayerNorm):
+                module.float()
+    finally:
+        engine.register_buffer("alignment_heads", heads, persistent=False)
+    engine.eval()
+    if any(parameter.device.type != "mps" for parameter in engine.parameters()):
+        raise TranscriptError("Whisper parameters did not move to MPS")
+    torch.mps.synchronize()
+    return engine
+
+
+@contextmanager
+def mps_compatibility(use_sdpa=True):
+    from whisper import timing
+    from whisper.model import MultiHeadAttention
+    original_dtw = timing.dtw
+    original_sdpa = MultiHeadAttention.use_sdpa
+
+    def dtw_on_cpu(matrix):
+        # Upstream dtw does .double().cpu(), but MPS cannot create float64.
+        # Move the small alignment matrix first; neural attention stays on MPS.
+        return original_dtw(matrix.cpu())
+
+    timing.dtw = dtw_on_cpu
+    # Verified with pinned PyTorch 2.15. On the tested M4, small benefited from
+    # SDPA while turbo was faster with explicit attention. Word alignment uses
+    # explicit attention in either case to collect the required attention scores.
+    MultiHeadAttention.use_sdpa = use_sdpa
+    try:
+        yield
+    finally:
+        timing.dtw = original_dtw
+        MultiHeadAttention.use_sdpa = original_sdpa
 
 
 def diarize(audio, models, num_speakers):
@@ -363,6 +450,45 @@ def recognize(audio, models, language, turns):
     return words, detected or "und"
 
 
+def recognize_mps(audio, models, language, turns, model="small"):
+    import torch
+    engine = load_mps_model(models, model)
+    detected = None if language == "auto" else language
+    words, duration = [], len(audio) / RATE
+    index = SpeakerTurns(turns)
+    try:
+        with torch.inference_mode(), mps_compatibility(use_sdpa=model == "small"):
+            for start in range(0, math.ceil(duration), 300):
+                end = min(duration, start + 300)
+                if not index.near(start, end, tolerance=0):
+                    progress("transcribing", end / duration)
+                    continue
+                padded_start, padded_end = max(0, start - 1), min(duration, end + 1)
+                # Copy read-only memmap views before PyTorch wraps their storage.
+                result = engine.transcribe(
+                    audio[int(padded_start * RATE):int(padded_end * RATE)].copy(),
+                    language=detected, task="transcribe", beam_size=5,
+                    word_timestamps=True, condition_on_previous_text=False,
+                    hallucination_silence_threshold=2, temperature=0.0,
+                    fp16=True, verbose=None,
+                )
+                for segment in result["segments"]:
+                    for word in segment.get("words", []):
+                        word_start, word_end = padded_start + word["start"], padded_start + word["end"]
+                        if start <= (word_start + word_end) / 2 < end and word_end > word_start:
+                            words.append({"start": word_start, "end": word_end, "text": word["word"]})
+                            if len(words) > 250_000:
+                                raise TranscriptError("Transcript exceeded the 250000-word safety limit")
+                if words and detected is None:
+                    detected = result["language"]
+                torch.mps.synchronize()
+                progress("transcribing", end / duration)
+    finally:
+        del engine
+        torch.mps.empty_cache()
+    return words, detected or "und"
+
+
 def atomic_json(filename, value):
     data = (json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n").encode("utf-8")
     if len(data) > MAX_OUTPUT_BYTES:
@@ -385,9 +511,11 @@ def offline_audit(event, args):
         raise TranscriptError("Network access is disabled during local transcription")
 
 
-def transcribe(manifest, output, models):
+def transcribe(manifest, output, models, backend="cpu", model="small"):
     started = time.monotonic()
-    ensure_models(models)
+    ensure_models(models, backend, model)
+    if backend == "mps":
+        require_mps()
     try:
         import numpy as np
     except ImportError as error:
@@ -405,9 +533,15 @@ def transcribe(manifest, output, models):
             has_signal = any(float(np.max(np.abs(audio[start:start + RATE * 60]))) > 0.00003
                              for start in range(0, len(audio), RATE * 60))
             progress("diarizing", 0)
+            diarization_started = time.monotonic()
             turns = diarize(audio, models, manifest["numSpeakers"]) if has_signal else []
+            diarization_seconds = time.monotonic() - diarization_started
+            asr_started = time.monotonic()
             if turns:
-                words, language = recognize(audio, models, manifest["language"], turns)
+                progress("transcribing", 0)
+                words, language = (recognize_mps(audio, models, manifest["language"], turns, model)
+                                   if backend == "mps" else recognize(audio, models, manifest["language"], turns))
+                asr_seconds = time.monotonic() - asr_started
                 alignment = {}
                 segments, speakers, skipped = assemble_segments(words, turns, spans, alignment)
                 warnings.extend(speaker_quality_warnings(speakers, alignment))
@@ -422,6 +556,7 @@ def transcribe(manifest, output, models):
                         previous_end, previous_speaker = turn["end"], turn["speaker"]
             else:
                 segments, speakers = [], []
+                asr_seconds = 0.0
                 language = "und" if manifest["language"] == "auto" else manifest["language"]
             if not segments:
                 warnings.append("No intelligible speech detected; transcript is empty.")
@@ -430,12 +565,16 @@ def transcribe(manifest, output, models):
                 "duration": round(max(span.offset + span.end - span.start for span in spans), 3),
                 "speakers": speakers, "segments": segments,
                 "engine": {
-                    "asr": "faster-whisper", "asrVersion": importlib.metadata.version("faster-whisper"),
-                    "model": "small", "modelRevision": WHISPER_REVISION,
+                    "asr": "openai-whisper" if backend == "mps" else "faster-whisper",
+                    "asrVersion": importlib.metadata.version("openai-whisper" if backend == "mps" else "faster-whisper"),
+                    **({"torchVersion": importlib.metadata.version("torch"), "attention": "sdpa" if model == "small" else "eager",
+                        "mpsFallback": False} if backend == "mps" else {}),
+                    "model": model, "modelRevision": MPS_CHECKPOINTS[model] if backend == "mps" else WHISPER_REVISION,
                     "diarization": "sherpa-onnx", "diarizationVersion": importlib.metadata.version("sherpa-onnx"),
                     "segmentation": "pyannote-segmentation-3.0", "embedding": "3dspeaker-eres2net-base",
-                    "device": "cpu", "computeType": "int8", "offline": True,
-                    "pipelineVersion": 2,
+                    "device": backend, "computeType": "float16" if backend == "mps" else "int8", "offline": True,
+                    "diarizationDevice": "cpu", "pipelineVersion": 3,
+                    "diarizationSeconds": round(diarization_seconds, 3), "asrSeconds": round(asr_seconds, 3),
                     "elapsedSeconds": round(time.monotonic() - started, 3),
                 },
                 "warnings": warnings,
@@ -456,6 +595,8 @@ def main(argv=None):
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--models", type=Path, required=True)
+    parser.add_argument("--backend", choices=("cpu", "mps"), default="cpu")
+    parser.add_argument("--model", choices=tuple(MPS_CHECKPOINTS), default="small")
     args = parser.parse_args(argv)
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, cancel)
@@ -469,7 +610,7 @@ def main(argv=None):
         inputs = [args.manifest.resolve(), *(Path(item["file"]).resolve() for item in manifest["recordings"])]
         if target in inputs or target.is_relative_to(args.models.resolve()):
             raise TranscriptError("Output must not overwrite an input recording, manifest, or model file")
-        transcribe(manifest, args.output.resolve(), args.models.resolve())
+        transcribe(manifest, args.output.resolve(), args.models.resolve(), args.backend, args.model)
         return 0
     except Interrupted as error:
         print(str(error), file=sys.stderr)

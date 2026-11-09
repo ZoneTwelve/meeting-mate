@@ -65,6 +65,28 @@ test('completed session queues once and includes every segment with wall-clock o
   assert.equal(f.children.length, 0);
   assert.equal(f.manager.summary().queued, 1);
 });
+test('queued backend is stable and changing model cannot reuse another transcript', async (t) => {
+  const f = await fixture(t);
+  const cpu = await f.manager.create({ recordingId: f.recordingId });
+  f.config.transcriptBackend = 'mps';
+  f.config.transcriptModel = 'large-v3-turbo';
+  await mkdir(path.dirname(f.config.transcriptMpsPython), { recursive: true });
+  await writeFile(f.config.transcriptMpsPython, 'fake MPS Python');
+  const gpu = await f.manager.create({ recordingId: f.recordingId });
+  assert.notEqual(cpu.id, gpu.id);
+  const first = await f.running();
+  assert.equal(first.command, f.config.transcriptPython);
+  assert.deepEqual(first.args.slice(-4), ['--backend', 'cpu', '--model', 'small']);
+  await f.complete(cpu);
+  f.config.transcriptBackend = 'cpu';
+  f.config.transcriptModel = 'small';
+  f.manager.pump();
+  for (let i = 0; i < 100 && f.children.length < 2; i++) await delay(2);
+  assert.equal(f.children.length, 2);
+  assert.equal(f.children[1].command, f.config.transcriptMpsPython);
+  assert.deepEqual(f.children[1].args.slice(-4), ['--backend', 'mps', '--model', 'large-v3-turbo']);
+  await f.complete(gpu);
+});
 test('active, unfinalized, missing, invalid and unsafe sources are refused', async (t) => {
   const f = await fixture(t);
   f.manager.isSessionActive = () => true;

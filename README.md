@@ -226,7 +226,7 @@ flowchart LR
 | Swift + ScreenCaptureKit | 使用 macOS 原生能力擷取會議視窗與音訊 | `native/Recorder.swift`、`src/recorder.mjs` |
 | FFmpeg／ffprobe | 準備提示卡、檢查影音檔、抽出轉寫音訊 | `scripts/`、`src/recorder.mjs` |
 | 本機 REST + MCP SDK／Zod | 提供 HTTP 與 MCP 工具，驗證操作參數 | `src/control-server.mjs`、`src/mcp.mjs` |
-| Python + faster-whisper small | 把語音轉成文字；CPU、int8 模型 | `scripts/transcribe.py` |
+| Python + Whisper | 預設 faster-whisper small / CPU int8；可選 OpenAI Whisper small 或 large-v3-turbo / PyTorch MPS，見[設定](docs/transcript.md#apple-gpupytorch-mps) | `scripts/transcribe.py` |
 | sherpa-onnx + 分段／聲音特徵模型 | 估計何時由哪個聲音群組發言 | `scripts/transcribe.py` |
 | Node 逐字稿佇列與匯出 | 排隊、保存進度、整合片段、產生四種格式 | `src/transcripts.mjs`、`src/transcript-format.mjs` |
 
