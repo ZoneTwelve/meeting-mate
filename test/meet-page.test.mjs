@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { meetPage } from '../src/meet-page.mjs';
+import { meetPage, MeetPage } from '../src/meet-page.mjs';
 
-function fixture({ labels = [], body = '', name = null, hostname = 'meet.google.com', href = `https://${hostname}/aaa-bbbb-ccc`, namedLabels = {}, cameraNotice = false, lateCameraNotice = false } = {}) {
+function fixture({ labels = [], body = '', name = null, hostname = 'meet.google.com', href = `https://${hostname}/aaa-bbbb-ccc`, namedLabels = {}, cameraNotice = false, lateCameraNotice = false, media = [] } = {}) {
   const events = [];
   let observerCallback;
   class Input {
@@ -29,17 +29,43 @@ function fixture({ labels = [], body = '', name = null, hostname = 'meet.google.
     getClientRects: () => notice.hidden ? [] : [1],
     querySelectorAll: () => [noticeButton] };
   const context = vm.createContext({
+    setTimeout, clearTimeout,
     HTMLInputElement: Input, Event: class { constructor(type) { this.type = type; } },
     MutationObserver: class { constructor(callback) { observerCallback = callback; } observe() {} },
     getComputedStyle: () => ({ visibility: 'visible' }), location: { hostname, href },
     document: { title: 'Meet', body: { innerText: body }, documentElement: {},
       getElementById: (id) => id in namedLabels ? { textContent: namedLabels[id] } : null,
-      querySelectorAll: (selector) => selector === 'input' ? (input ? [input] : []) : selector.includes('dialog') ? (cameraNotice ? [notice] : []) : selector.includes('button') ? buttons : [] },
+      querySelectorAll: (selector) => selector === 'audio,video' ? media : selector === 'input' ? (input ? [input] : []) : selector.includes('dialog') ? (cameraNotice ? [notice] : []) : selector.includes('button') ? buttons : [] },
   });
   return { buttons, noticeButton, input, events,
     revealNotice: () => { notice.hidden = false; observerCallback?.(); },
-    run: (op = 'snapshot', value = '') => JSON.parse(JSON.stringify(vm.runInContext(`(${meetPage})(${JSON.stringify(op)},${JSON.stringify(value)})`, context))) };
+    run: (op = 'snapshot', value = '') => JSON.parse(JSON.stringify(vm.runInContext(`(${meetPage})(${JSON.stringify(op)},${JSON.stringify(value)})`, context))),
+    runAsync: async (op) => JSON.parse(JSON.stringify(await vm.runInContext(`(${meetPage})(${JSON.stringify(op)})`, context))) };
 }
+test('join and playback recovery activate the page, while snapshots stay read-only', async () => {
+  const options = [];
+  const page = new MeetPage({ evaluate: async (_expression, config) => { options.push(config); return true; } });
+  await page.run('join'); await page.run('resumeAudio'); await page.snapshot();
+  assert.deepEqual(options.map(item => item.userGesture), [true, true, false]);
+});
+test('audio recovery resumes incoming audio without unmuting self-view or unrelated media', async () => {
+  const remote = { paused: true, muted: false, volume: 1, plays: 0,
+    srcObject: { getAudioTracks: () => [{ readyState: 'live', enabled: true }] },
+    play() { this.plays++; this.paused = false; return Promise.resolve(); } };
+  const self = { ...remote, muted: true, plays: 0 };
+  const unrelated = { ...remote, srcObject: null, plays: 0 };
+  const page = fixture({ media: [remote, self, unrelated] });
+  assert.deepEqual(await page.runAsync('resumeAudio'), { streams: 2, paused: 0, muted: 1, errors: [] });
+  assert.equal(remote.plays, 1); assert.equal(self.plays, 0); assert.equal(unrelated.plays, 0);
+  assert.equal(self.muted, true);
+});
+test('blocked incoming audio returns a warning without rejecting the meeting operation', async () => {
+  const remote = { paused: true, muted: false, volume: 1,
+    srcObject: { getAudioTracks: () => [{ readyState: 'live', enabled: true }] },
+    play: () => Promise.reject(Object.assign(new Error('Blocked'), { name: 'NotAllowedError' })) };
+  assert.deepEqual(await fixture({ media: [remote] }).runAsync('resumeAudio'),
+    { streams: 1, paused: 1, muted: 0, errors: ['NotAllowedError'] });
+});
 test('fills Yumi through the native setter and dispatches input events', () => {
   const page = fixture({ labels: ['Ask to join'], name: '' });
   assert.equal(page.run('name', 'Yumi'), true);

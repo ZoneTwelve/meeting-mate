@@ -1,5 +1,22 @@
 // This function runs in the Meet tab. All controls must be visible and enabled.
 export function meetPage(operation = 'snapshot', value = '') {
+  if (operation === 'resumeAudio') {
+    // Only resume existing incoming media. Do not enable a microphone, unmute
+    // self-view, change volume, or start unrelated prerecorded page audio.
+    const media = [...document.querySelectorAll('audio,video')].filter(element =>
+      element.srcObject?.getAudioTracks?.().some(track => track.readyState === 'live' && track.enabled));
+    const candidates = media.filter(element => !element.muted && element.volume > 0);
+    const pending = candidates.filter(element => element.paused).map(element => {
+      try { return Promise.resolve(element.play()).then(() => null, error => error.name || 'PlaybackError'); }
+      catch (error) { return Promise.resolve(error.name || 'PlaybackError'); }
+    });
+    const state = errors => ({ streams: media.length, paused: candidates.filter(element => element.paused).length,
+      muted: media.length - candidates.length, errors });
+    return new Promise(resolve => {
+      const timer = setTimeout(() => resolve(state(['PlaybackTimeout'])), 1500);
+      Promise.all(pending).then(errors => { clearTimeout(timer); resolve(state(errors.filter(Boolean))); });
+    });
+  }
   const visible = (element) => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden';
   const enabled = (element) => !element.disabled && element.getAttribute('aria-disabled') !== 'true';
   const label = (element) => (element.getAttribute('aria-label') || element.innerText || '').trim();
@@ -76,7 +93,10 @@ export function meetPage(operation = 'snapshot', value = '') {
 
 export class MeetPage {
   constructor(cdp) { this.cdp = cdp; }
-  run(operation, value = '') { return this.cdp.evaluate(`(${meetPage.toString()})(${JSON.stringify(operation)},${JSON.stringify(value)})`); }
+  run(operation, value = '') {
+    return this.cdp.evaluate(`(${meetPage.toString()})(${JSON.stringify(operation)},${JSON.stringify(value)})`,
+      { userGesture: ['join', 'resumeAudio'].includes(operation) });
+  }
   snapshot() { return this.run('snapshot'); }
   async prepare(username) {
     let snapshot = await this.snapshot();

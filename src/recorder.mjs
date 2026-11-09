@@ -31,16 +31,38 @@ export async function permission(config, { request = false } = {}) {
   }
 }
 
-export async function verifyRecording(file) {
-  const { stdout } = await execute('ffprobe', ['-v', 'error', '-count_frames', '-show_streams', '-show_format', '-of', 'json', file], { timeout: 60000, maxBuffer: 2 ** 20 });
+export function parseAudioSignal(diagnostics) {
+  const last = expression => [...diagnostics.matchAll(expression)].at(-1)?.[1];
+  const peak = last(/Peak level dB: ([^\s]+)/g);
+  const rms = last(/RMS level dB: ([^\s]+)/g);
+  const samples = Number(last(/Number of samples: ([^\s]+)/g));
+  const decibels = value => value === '-inf' ? null : Number(value);
+  const peakDB = decibels(peak), rmsDB = decibels(rms);
+  if (!(samples > 0) || !Number.isFinite(samples) ||
+    (peakDB !== null && !Number.isFinite(peakDB)) || (rmsDB !== null && !Number.isFinite(rmsDB))) {
+    throw new Error('Could not verify recorded audio signal levels');
+  }
+  return { status: peakDB === null ? 'silent' : peakDB < -60 ? 'quiet' : 'signal', peakDB, rmsDB, samples };
+}
+
+export async function verifyRecording(file, { execute: run = execute } = {}) {
+  const { stdout } = await run('ffprobe', ['-v', 'error', '-count_frames', '-show_streams', '-show_format', '-of', 'json', file], { timeout: 60000, maxBuffer: 2 ** 20 });
   const probe = JSON.parse(stdout);
   const video = probe.streams.find((stream) => stream.codec_type === 'video');
   const audio = probe.streams.find((stream) => stream.codec_type === 'audio');
   if (!video || !audio || !(Number(probe.format.duration) > 0) || !(Number(video.nb_read_frames) > 0) || !(Number(audio.nb_read_frames) > 0)) {
     throw new Error('Recording did not contain decodable video and audio');
   }
+  const { stderr } = await run('ffmpeg', ['-nostdin', '-hide_banner', '-v', 'info', '-xerror',
+    '-protocol_whitelist', 'file,pipe', '-i', file, '-map', '0:a:0', '-vn', '-af', 'astats=metadata=0:reset=0', '-f', 'null', '-'],
+  { timeout: Math.max(30000, Math.min(120000, Math.ceil(Number(probe.format.duration) * 200))), maxBuffer: 2 ** 20 });
+  const audioSignal = parseAudioSignal(stderr);
+  // Real meetings can contain genuine silence. Preserve the playable recording,
+  // but expose the missing signal rather than calling an audio track audible.
+  const warnings = audioSignal.status === 'silent' ? ['Recorded audio is digital silence; no spoken content can be transcribed.']
+    : audioSignal.status === 'quiet' ? ['Recorded audio peak is below -60 dB; check the audio source.'] : [];
   return { file, duration: Number(probe.format.duration), bytes: Number(probe.format.size), video: video.codec_name,
-    audio: audio.codec_name, frames: Number(video.nb_read_frames), audioFrames: Number(audio.nb_read_frames) };
+    audio: audio.codec_name, frames: Number(video.nb_read_frames), audioFrames: Number(audio.nb_read_frames), audioSignal, warnings };
 }
 
 export class Recorder {

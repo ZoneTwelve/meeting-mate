@@ -5,9 +5,41 @@ import { PassThrough } from 'node:stream';
 import { mkdtemp, appendFile, access, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { Recorder } from '../src/recorder.mjs';
+import { Recorder, parseAudioSignal, verifyRecording } from '../src/recorder.mjs';
 
 const args = { pid: 123, title: 'Meeting Mate test', url: 'https://meet.google.com/aaa-bbbb-ccc' };
+const audioStats = (peak, rms = peak) => `Peak level dB: ${peak}\nRMS level dB: ${rms}\nNumber of samples: 48000\n`;
+test('signal inspection distinguishes digital silence, quiet audio and a non-silent stereo mix', () => {
+  assert.deepEqual(parseAudioSignal(audioStats('-inf')), { status: 'silent', peakDB: null, rmsDB: null, samples: 48000 });
+  assert.equal(parseAudioSignal(audioStats('-75')).status, 'quiet');
+  assert.deepEqual(parseAudioSignal(audioStats('-inf') + audioStats('-20', '-23')),
+    { status: 'signal', peakDB: -20, rmsDB: -23, samples: 48000 });
+  assert.throws(() => parseAudioSignal('No audio samples'), /Could not verify/);
+});
+test('playable silent media remains downloadable but carries a durable audio warning', async () => {
+  const calls = [];
+  const media = await verifyRecording('/tmp/synthetic.mp4', { execute: async (command, argv) => {
+    calls.push({ command, argv });
+    if (command === 'ffprobe') return { stdout: JSON.stringify({ format: { duration: '1', size: '100' },
+      streams: [{ codec_type: 'video', codec_name: 'h264', nb_read_frames: '15' }, { codec_type: 'audio', codec_name: 'aac', nb_read_frames: '47' }] }) };
+    return { stderr: audioStats('-inf') };
+  } });
+  assert.equal(media.audio, 'aac'); assert.equal(media.audioSignal.status, 'silent');
+  assert.match(media.warnings[0], /digital silence/);
+  assert.deepEqual(calls.map(item => item.command), ['ffprobe', 'ffmpeg']);
+  assert.ok(calls[1].argv.includes('astats=metadata=0:reset=0'));
+});
+test('fractional recording durations use valid bounded subprocess deadlines', async () => {
+  for (const duration of [1.001, 224.068333, 322.056667, 900.123]) {
+    await verifyRecording('/tmp/synthetic.mp4', { execute: async (command, _argv, options) => {
+      assert.ok(Number.isSafeInteger(options.timeout), 'Node child processes require integer timeouts');
+      if (command === 'ffprobe') return { stdout: JSON.stringify({ format: { duration: String(duration), size: '100' },
+        streams: [{ codec_type: 'video', codec_name: 'h264', nb_read_frames: '15' }, { codec_type: 'audio', codec_name: 'aac', nb_read_frames: '47' }] }) };
+      assert.ok(options.timeout >= 30000 && options.timeout <= 120000);
+      return { stderr: audioStats('-20') };
+    } });
+  }
+});
 async function fixture(t, { mode = 'ok', timeout = 500 } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'meeting-mate-unit-'));
   let timer;

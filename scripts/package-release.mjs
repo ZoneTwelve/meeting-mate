@@ -10,7 +10,7 @@ export const RELEASE_FILES = Object.freeze([
   'requirements-transcript.txt', 'bin/meeting-mate.mjs', 'native/Recorder.swift',
   'src/api-client.mjs', 'src/browser.mjs', 'src/cdp.mjs', 'src/config.mjs',
   'src/control-server.mjs', 'src/diagnostics.mjs', 'src/idle.mjs', 'src/index.mjs',
-  'src/mcp.mjs', 'src/meet-page.mjs', 'src/monitor.mjs', 'src/openapi.mjs',
+  'src/mcp.mjs', 'src/meet-page.mjs', 'src/meeting-validation.mjs', 'src/monitor.mjs', 'src/openapi.mjs',
   'src/recorder.mjs', 'src/recording-tests.mjs', 'src/recordings.mjs', 'src/schedule.mjs',
   'src/transcript-format.mjs', 'src/transcripts.mjs',
   'src/bind-linear.mjs', 'src/slack-client.mjs', 'src/slack-command-server.mjs',
@@ -19,7 +19,7 @@ export const RELEASE_FILES = Object.freeze([
   'scripts/install-launchd.sh', 'scripts/join-now.mjs', 'scripts/launchd.mjs',
   'scripts/package-release.mjs', 'scripts/prepare-camera.mjs', 'scripts/repo-watch.mjs',
   'scripts/smoke.mjs', 'scripts/test-mcp-live.mjs', 'scripts/test-transcript-live.mjs',
-  'scripts/slack-bind.mjs', 'docs/slack-binding.md',
+  'scripts/slack-bind.mjs', 'scripts/meet-rehearsal.mjs', 'scripts/verify-meeting.mjs', 'docs/slack-binding.md',
   'scripts/transcribe.py', 'scripts/transcript-setup.mjs', 'scripts/upgrade-when-idle.mjs',
   'docs/api.md', 'docs/mcp.md', 'docs/releases.md', 'docs/repository.md', 'docs/requirements.md', 'docs/test-plan.md', 'docs/transcript.md',
 ]);

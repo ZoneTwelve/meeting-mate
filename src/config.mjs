@@ -19,7 +19,7 @@ export function normalizeConfig(raw, env = process.env, base = root) {
   const username = (env.MEET_USERNAME ?? '').trim();
   if (!username || username.length > 60) throw new Error('Set MEET_USERNAME in .env to a display name of 1–60 characters');
   const urls = raw.meetingUrls ?? [raw.meetingUrl];
-  if (!Array.isArray(urls) || !urls.length) throw new Error('meetingUrls must be a nonempty array');
+  if (!Array.isArray(urls)) throw new Error('meetingUrls must be an array; use [] for manual-only operation');
   const absolute = (p) => path.resolve(base, p);
   const port = (name, fallback) => {
     const n = positive(name, fallback);
