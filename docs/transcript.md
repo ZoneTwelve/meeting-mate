@@ -21,6 +21,15 @@ node scripts/transcript-setup.mjs --check
 - `.meeting-mate/models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx`：說話人 embedding。
 - `.meeting-mate/models/transcript-models.json`：安裝完成資訊與實際 SHA-256。
 
+預設使用最多 4 個 CPU threads（上限 8），可用環境變數調整：
+
+```bash
+MEETING_MATE_TRANSCRIPT_THREADS=8 pnpm run test:transcript:live -- <recording-id.mp4>
+```
+
+這只調整本機 ASR 與 speaker diarization 的 CPU 平行度；目前 macOS 的
+`faster-whisper`/CTranslate2 仍不使用 Apple MPS，不能把 `mps` 當成 device 值。
+
 模型使用官方公開下載位置，不需要 Hugging Face token、雲端語音服務或接受 gated 模型條款。只在安裝階段連網下載套件及模型；推論設定 `HF_HUB_OFFLINE=1`、`HF_HUB_DISABLE_TELEMETRY=1`、`TRANSFORMERS_OFFLINE=1`、`DO_NOT_TRACK=1`，並使用 `local_files_only=True` 與本機模型路徑。Python audit hook 也會拒絕一般 Python 網路連線／DNS；這是額外防護，不是作業系統網路 sandbox。音訊不會上傳。
 
 ## Worker 介面

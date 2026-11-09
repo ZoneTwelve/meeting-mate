@@ -17,14 +17,19 @@ import sys
 import tempfile
 import time
 
+try:
+    THREADS = max(1, min(8, int(os.environ.get("MEETING_MATE_TRANSCRIPT_THREADS", "4"))))
+except ValueError:
+    THREADS = 4
+
 # Set before importing any inference/download libraries. No model IDs are passed
 # to inference APIs: only the verified local model directory is used.
 for _key, _value in {
     "HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1",
     "TRANSFORMERS_OFFLINE": "1", "DO_NOT_TRACK": "1",
     "TOKENIZERS_PARALLELISM": "false",
-    "OMP_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2",
-    "MKL_NUM_THREADS": "2", "VECLIB_MAXIMUM_THREADS": "2",
+    "OMP_NUM_THREADS": str(THREADS), "OPENBLAS_NUM_THREADS": str(THREADS),
+    "MKL_NUM_THREADS": str(THREADS), "VECLIB_MAXIMUM_THREADS": str(THREADS),
 }.items():
     os.environ[_key] = _value
 
@@ -296,9 +301,9 @@ def diarize(audio, models, num_speakers):
         segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
             pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
                 model=str(models / SEGMENTATION), window_shift_ratio=0.1),
-            num_threads=2, provider="cpu", debug=False),
+            num_threads=THREADS, provider="cpu", debug=False),
         embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-            model=str(models / EMBEDDING), num_threads=2, provider="cpu", debug=False),
+            model=str(models / EMBEDDING), num_threads=THREADS, provider="cpu", debug=False),
         clustering=sherpa_onnx.FastClusteringConfig(num_clusters=num_speakers or -1, threshold=0.5),
         min_duration_on=0.3, min_duration_off=0.5,
     )
@@ -323,7 +328,7 @@ def diarize(audio, models, num_speakers):
 def recognize(audio, models, language, turns):
     from faster_whisper import WhisperModel
     engine = WhisperModel(str(models / "faster-whisper-small"), device="cpu", compute_type="int8",
-                          cpu_threads=min(2, os.cpu_count() or 1), num_workers=1, local_files_only=True)
+                          cpu_threads=THREADS, num_workers=1, local_files_only=True)
     detected = None if language == "auto" else language
     words = []
     duration = len(audio) / RATE
